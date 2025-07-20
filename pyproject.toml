@@ -6,9 +6,21 @@ requires-python = ">=3.13"
 dependencies = [
     "aiofiles>=24.1.0",
     "httpx>=0.28.1",
-    "mcp[cli]>=1.10.0",
-    "openai>=1.92.2",
-    "pillow>=11.2.1",
+    "fastmcp>=0.4.0",
+    "openai>=1.97.0",
+    "pillow>=11.3.0",
     "pydantic>=2.11.7",
     "python-dotenv>=1.1.1",
+    "starlette>=0.41.2",
+    "google-api-python-client>=2.156.0",
+    "google-auth>=2.37.0",
+    "google-auth-oauthlib>=1.2.1",
+    "google-auth-httplib2>=0.2.0",
 ]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["server", "main"]

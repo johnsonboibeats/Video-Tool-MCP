@@ -1,0 +1,185 @@
+{
+  "name": "Image Tool MCP",
+  "instructions": null,
+  "fastmcp_version": "2.10.5",
+  "mcp_version": "1.12.0",
+  "server_version": "2.10.5",
+  "tools": [
+    {
+      "key": "create_image",
+      "name": "create_image",
+      "description": "Generate images from text prompts using OpenAI's latest gpt-image-1 model.\n\nSupports both local files and Google Drive files.\n\nArgs:\n    prompt: Text description of the image to generate (max 32000 chars)\n    model: Image generation model (only gpt-image-1 supported)\n    size: Image dimensions or 'auto' for optimal size\n    quality: Generation quality level\n    background: Background handling for generated image\n    output_format: Image format (png/jpeg/webp)\n    output_compression: Compression level 0-100 (webp/jpeg only)\n    moderation: Content moderation level\n    n: Number of images to generate (1-10)\n    output_mode: Return as base64 data or save to file\n    file_path: Absolute path for file output (required if output_mode='file')\n    \nReturns:\n    Generated image(s) as base64 data or file paths",
+      "input_schema": {
+        "properties": {
+          "prompt": {
+            "title": "Prompt",
+            "type": "string"
+          },
+          "model": {
+            "const": "gpt-image-1",
+            "default": "gpt-image-1",
+            "title": "Model",
+            "type": "string"
+          },
+          "size": {
+            "default": "auto",
+            "enum": [
+              "1024x1024",
+              "1536x1024",
+              "1024x1536",
+              "auto"
+            ],
+            "title": "Size",
+            "type": "string"
+          },
+          "quality": {
+            "default": "auto",
+            "enum": [
+              "auto",
+              "high",
+              "medium",
+              "low"
+            ],
+            "title": "Quality",
+            "type": "string"
+          },
+          "background": {
+            "default": "auto",
+            "enum": [
+              "transparent",
+              "opaque",
+              "auto"
+            ],
+            "title": "Background",
+            "type": "string"
+          },
+          "output_format": {
+            "default": "png",
+            "enum": [
+              "png",
+              "jpeg",
+              "webp"
+            ],
+            "title": "Output Format",
+            "type": "string"
+          },
+          "output_compression": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Output Compression"
+          },
+          "moderation": {
+            "default": "auto",
+            "enum": [
+              "auto",
+              "low"
+            ],
+            "title": "Moderation",
+            "type": "string"
+          },
+          "n": {
+            "default": 1,
+            "title": "N",
+            "type": "integer"
+          },
+          "output_mode": {
+            "default": "base64",
+            "enum": [
+              "base64",
+              "file"
+            ],
+            "title": "Output Mode",
+            "type": "string"
+          },
+          "file_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "File Path"
+          }
+        },
+        "required": [
+          "prompt"
+        ],
+        "type": "object"
+      },
+      "annotations": null,
+      "tags": null,
+      "enabled": true
+    },
+    {
+      "key": "analyze_image",
+      "name": "analyze_image",
+      "description": "Analyze an image using OpenAI's Vision API to extract detailed information.\n\nSupports both local files and Google Drive files.\n\nArgs:\n    image: Absolute file path, Google Drive URL/ID, or base64 string of image to analyze\n    prompt: Analysis prompt (what to look for in the image)\n    model: Vision model to use (gpt-4o, gpt-4o-mini, etc.)\n    max_tokens: Maximum tokens in response\n    detail: Image detail level for processing\n    \nReturns:\n    Detailed analysis of the image content",
+      "input_schema": {
+        "properties": {
+          "image": {
+            "title": "Image",
+            "type": "string"
+          },
+          "prompt": {
+            "default": "Describe this image in detail, including objects, people, scenery, colors, mood, and any text visible.",
+            "title": "Prompt",
+            "type": "string"
+          },
+          "model": {
+            "default": "gpt-4o",
+            "title": "Model",
+            "type": "string"
+          },
+          "max_tokens": {
+            "default": 1000,
+            "title": "Max Tokens",
+            "type": "integer"
+          },
+          "detail": {
+            "default": "auto",
+            "enum": [
+              "low",
+              "high",
+              "auto"
+            ],
+            "title": "Detail",
+            "type": "string"
+          }
+        },
+        "required": [
+          "image"
+        ],
+        "type": "object"
+      },
+      "annotations": null,
+      "tags": null,
+      "enabled": true
+    }
+  ],
+  "prompts": [],
+  "resources": [],
+  "templates": [],
+  "capabilities": {
+    "tools": {
+      "listChanged": true
+    },
+    "resources": {
+      "subscribe": false,
+      "listChanged": false
+    },
+    "prompts": {
+      "listChanged": false
+    },
+    "logging": {}
+  }
+}
