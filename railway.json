@@ -1,14 +1,27 @@
 {
-  "$schema": "https://railway.app/railway.schema.json",
-  "build": {
-    "builder": "NIXPACKS",
-    "nixpacksConfig": {
-      "providers": ["python"]
+  "$schema": "https://railway.app/schemas/railway.schema.json",
+  "name": "image-tool-mcp",
+  "variables": {
+    "OPENAI_API_KEY": {
+      "value": "",
+      "isSensitive": true
+    },
+    "GOOGLE_SERVICE_ACCOUNT_JSON": {
+      "value": "",
+      "isSensitive": true,
+      "isOptional": true
+    },
+    "PORT": {
+      "value": "8000",
+      "isOptional": true
     }
+  },
+  "build": {
+    "builder": "NIXPACKS"
   },
   "deploy": {
     "startCommand": "python server.py",
-    "restartPolicyType": "ON_FAILURE",
-    "restartPolicyMaxRetries": 10
+    "healthcheckPath": "/health",
+    "healthcheckTimeout": 300
   }
 }

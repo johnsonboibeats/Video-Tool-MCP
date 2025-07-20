@@ -1,26 +1,80 @@
 [project]
-name = "images-tool-mcp"
-version = "0.1.0"
-description = "A comprehensive Model Context Protocol server for OpenAI image generation and analysis"
-requires-python = ">=3.11"
+name = "image-tool-mcp"
+version = "1.0.0"
+description = "Comprehensive image processing MCP server with OpenAI image generation and analysis"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [
+    { name = "AI Assistant", email = "assistant@example.com" }
+]
+keywords = ["mcp", "image", "openai", "generation", "analysis", "vision"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Graphics",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+requires-python = ">=3.13"
 dependencies = [
-    "aiofiles>=24.1.0",
-    "httpx>=0.28.1",
     "fastmcp>=0.4.0",
-    "openai>=1.97.0",
+    "openai>=1.100.0",
     "pillow>=11.3.0",
-    "pydantic>=2.11.7",
+    "httpx>=0.28.1",
     "python-dotenv>=1.1.1",
-    "starlette>=0.41.2",
     "google-api-python-client>=2.156.0",
     "google-auth>=2.37.0",
     "google-auth-oauthlib>=1.2.1",
     "google-auth-httplib2>=0.2.0",
 ]
 
-[build-system]
-requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.build_meta"
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "black>=23.0.0",
+    "isort>=5.12.0",
+    "mypy>=1.0.0",
+]
 
-[tool.setuptools]
-py-modules = ["server"]
+[project.urls]
+Homepage = "https://github.com/user/image-tool-mcp"
+Repository = "https://github.com/user/image-tool-mcp"
+Documentation = "https://github.com/user/image-tool-mcp#readme"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["."]
+
+[tool.black]
+line-length = 100
+target-version = ['py313']
+
+[tool.isort]
+profile = "black"
+line_length = 100
+
+[tool.mypy]
+python_version = "3.13"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_unreachable = true
+strict_equality = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-v --tb=short"

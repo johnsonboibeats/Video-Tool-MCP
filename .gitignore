@@ -129,7 +129,7 @@ Thumbs.db
 temp/
 tmp/
 
-# Image files (for testing)
+# Image Tool specific
 test_images/
 *.png
 *.jpg
@@ -137,8 +137,6 @@ test_images/
 *.gif
 *.webp
 !test_fixtures/*.png
-
-# MCP Server specific
 server-info.json
 *_backup*.py
 temp_*.py
