@@ -137,3 +137,10 @@ test_images/
 *.gif
 *.webp
 !test_fixtures/*.png
+
+# MCP Server specific
+server-info.json
+*_backup*.py
+temp_*.py
+credentials.json
+token.json

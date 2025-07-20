@@ -1,8 +1,8 @@
 [project]
 name = "images-tool-mcp"
 version = "0.1.0"
-description = "Add your description here"
-requires-python = ">=3.13"
+description = "A comprehensive Model Context Protocol server for OpenAI image generation and analysis"
+requires-python = ">=3.11"
 dependencies = [
     "aiofiles>=24.1.0",
     "httpx>=0.28.1",
@@ -23,4 +23,4 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-py-modules = ["server", "main"]
+py-modules = ["server"]
