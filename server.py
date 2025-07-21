@@ -619,6 +619,742 @@ async def analyze_image(
         raise ValueError(f"Failed to analyze image: {str(e)}")
 
 # =============================================================================
+# MISSING TOOLS RESTORATION
+# =============================================================================
+
+@mcp.tool()
+async def edit_image(
+    image: str,
+    prompt: str,
+    mask: Optional[str] = None,
+    model: Literal["gpt-image-1"] = "gpt-image-1",
+    size: Literal["1024x1024", "1536x1024", "1024x1536", "auto"] = "auto",
+    quality: Literal["auto", "high", "medium", "low"] = "auto",
+    output_format: Literal["png", "jpeg", "webp"] = "png",
+    output_mode: Literal["base64", "file"] = "base64",
+    file_path: Optional[str] = None,
+    ctx: Context = None
+) -> Union[str, list[str]]:
+    """Edit existing images using masks and text prompts.
+    
+    Supports both local files and Google Drive files.
+    
+    Args:
+        image: Original image (file path, Google Drive URL/ID, or base64)
+        prompt: Text description of desired changes
+        mask: Optional mask image for selective editing (same formats as image)
+        model: Image generation model
+        size: Image dimensions
+        quality: Generation quality level
+        output_format: Image format
+        output_mode: Return as base64 data or save to file
+        file_path: Absolute path for file output (required if output_mode='file')
+        
+    Returns:
+        Edited image(s) as base64 data or file paths
+    """
+    app_context = get_app_context()
+    client = app_context.openai_client
+    temp_dir = app_context.temp_dir
+    
+    # Get file paths
+    image_path = await get_file_path(image)
+    mask_path = await get_file_path(mask) if mask else None
+    
+    # Prepare images for API
+    image_base64, _ = await load_image_as_base64(image_path)
+    
+    params = {
+        "model": model,
+        "prompt": prompt,
+        "image": image_base64,
+        "size": size if size != "auto" else "1024x1024",
+        "quality": quality,
+        "response_format": "b64_json"
+    }
+    
+    if mask_path:
+        mask_base64, _ = await load_image_as_base64(mask_path)
+        params["mask"] = mask_base64
+    
+    try:
+        if ctx: ctx.info(f"Editing image with prompt: {prompt[:100]}...")
+        response = await client.images.edit(**params)
+        
+        b64_data = response.data[0].b64_json
+        
+        if output_mode == "file":
+            if not file_path:
+                raise ValueError("file_path required for file output")
+            save_path = Path(file_path)
+            await save_base64_image(b64_data, save_path, output_format.upper())
+            return str(save_path)
+        else:
+            return f"data:image/{output_format};base64,{b64_data}"
+            
+    except Exception as e:
+        raise ValueError(f"Failed to edit image: {str(e)}")
+
+@mcp.tool()
+async def generate_variations(
+    image: str,
+    n: int = 1,
+    model: Literal["gpt-image-1"] = "gpt-image-1",
+    size: Literal["1024x1024", "1536x1024", "1024x1536", "auto"] = "auto",
+    quality: Literal["auto", "high", "medium", "low"] = "auto",
+    output_format: Literal["png", "jpeg", "webp"] = "png",
+    output_mode: Literal["base64", "file"] = "base64",
+    file_path: Optional[str] = None,
+    ctx: Context = None
+) -> Union[str, list[str]]:
+    """Generate variations of existing images.
+    
+    Supports both local files and Google Drive files.
+    
+    Args:
+        image: Original image (file path, Google Drive URL/ID, or base64)
+        n: Number of variations to generate (1-10)
+        model: Image generation model
+        size: Image dimensions
+        quality: Generation quality level
+        output_format: Image format
+        output_mode: Return as base64 data or save to file
+        file_path: Absolute path for file output (required if output_mode='file')
+        
+    Returns:
+        Image variation(s) as base64 data or file paths
+    """
+    app_context = get_app_context()
+    client = app_context.openai_client
+    temp_dir = app_context.temp_dir
+    
+    if n < 1 or n > 10:
+        raise ValueError("Number of variations must be between 1 and 10")
+    
+    image_path = await get_file_path(image)
+    image_base64, _ = await load_image_as_base64(image_path)
+    
+    params = {
+        "model": model,
+        "image": image_base64,
+        "n": n,
+        "size": size if size != "auto" else "1024x1024",
+        "response_format": "b64_json"
+    }
+    
+    try:
+        if ctx: ctx.info(f"Generating {n} variation(s)...")
+        response = await client.images.create_variation(**params)
+        
+        results = []
+        for i, img_data in enumerate(response.data):
+            b64_data = img_data.b64_json
+            
+            if output_mode == "file":
+                if not file_path:
+                    raise ValueError("file_path required for file output")
+                path = Path(file_path)
+                if n > 1:
+                    save_path = path.parent / f"{path.stem}_{i+1}{path.suffix}"
+                else:
+                    save_path = path
+                await save_base64_image(b64_data, save_path, output_format.upper())
+                results.append(str(save_path))
+            else:
+                results.append(f"data:image/{output_format};base64,{b64_data}")
+        
+        return results if n > 1 else results[0]
+        
+    except Exception as e:
+        raise ValueError(f"Failed to generate variations: {str(e)}")
+
+@mcp.tool()
+async def extract_text(
+    image: str,
+    language: Optional[str] = None,
+    ctx: Context = None
+) -> Dict[str, Any]:
+    """Extract text from images using OCR.
+    
+    Supports both local files and Google Drive files.
+    
+    Args:
+        image: Image to extract text from (file path, Google Drive URL/ID, or base64)
+        language: Language hint for better accuracy (e.g., 'eng', 'spa', 'fra')
+        
+    Returns:
+        Extracted text with confidence scores and bounding boxes
+    """
+    app_context = get_app_context()
+    client = app_context.openai_client
+    
+    image_path = await get_file_path(image)
+    image_base64, mime_type = await load_image_as_base64(image_path)
+    
+    prompt = "Extract all text from this image. If the image contains multiple languages, identify each language. Provide the text with confidence scores and approximate locations if possible."
+    
+    try:
+        if ctx: ctx.info("Extracting text from image...")
+        
+        response = await client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:{mime_type};base64,{image_base64}",
+                                "detail": "high"
+                            }
+                        }
+                    ]
+                }
+            ],
+            max_tokens=2000
+        )
+        
+        text_content = response.choices[0].message.content
+        
+        return {
+            "success": True,
+            "text": text_content,
+            "source_file": str(image_path),
+            "language_hint": language
+        }
+        
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "source_file": str(image_path)
+        }
+
+@mcp.tool()
+async def compare_images(
+    image1: str,
+    image2: str,
+    ctx: Context = None
+) -> Dict[str, Any]:
+    """Compare two images and analyze differences.
+    
+    Supports both local files and Google Drive files.
+    
+    Args:
+        image1: First image (file path, Google Drive URL/ID, or base64)
+        image2: Second image (file path, Google Drive URL/ID, or base64)
+        
+    Returns:
+        Detailed comparison analysis including similarities and differences
+    """
+    app_context = get_app_context()
+    client = app_context.openai_client
+    
+    image1_path = await get_file_path(image1)
+    image2_path = await get_file_path(image2)
+    
+    image1_base64, _ = await load_image_as_base64(image1_path)
+    image2_base64, _ = await load_image_as_base64(image2_path)
+    
+    prompt = """Compare these two images and provide a detailed analysis of:
+1. Overall similarity/difference score (0-100%)
+2. Visual elements that are the same
+3. Visual elements that are different
+4. Color differences
+5. Composition differences
+6. Content changes
+7. Quality differences
+8. Style variations
+
+Be specific and quantitative where possible."""
+    
+    try:
+        if ctx: ctx.info("Comparing images...")
+        
+        response = await client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/png;base64,{image1_base64}",
+                                "detail": "high"
+                            }
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/png;base64,{image2_base64}",
+                                "detail": "high"
+                            }
+                        }
+                    ]
+                }
+            ],
+            max_tokens=1500
+        )
+        
+        return {
+            "success": True,
+            "comparison": response.choices[0].message.content,
+            "image1": str(image1_path),
+            "image2": str(image2_path)
+        }
+        
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "image1": str(image1_path),
+            "image2": str(image2_path)
+        }
+
+@mcp.tool()
+async def smart_edit(
+    image: str,
+    analysis_prompt: str,
+    edit_prompt: str,
+    ctx: Context = None
+) -> Dict[str, Any]:
+    """Intelligent image editing with analysis and targeted modifications.
+    
+    Supports both local files and Google Drive files.
+    
+    Args:
+        image: Image to edit (file path, Google Drive URL/ID, or base64)
+        analysis_prompt: What to analyze in the image
+        edit_prompt: How to modify based on the analysis
+        
+    Returns:
+        Edited image with analysis and modification details
+    """
+    app_context = get_app_context()
+    client = app_context.openai_client
+    
+    image_path = await get_file_path(image)
+    image_base64, mime_type = await load_image_as_base64(image_path)
+    
+    # First, analyze the image
+    analysis_prompt_full = f"{analysis_prompt} Provide specific details that would help with targeted editing."
+    
+    try:
+        if ctx: ctx.info("Analyzing image for smart editing...")
+        
+        analysis_response = await client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": analysis_prompt_full},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:{mime_type};base64,{image_base64}",
+                                "detail": "high"
+                            }
+                        }
+                    ]
+                }
+            ],
+            max_tokens=1000
+        )
+        
+        analysis = analysis_response.choices[0].message.content
+        
+        # Now edit based on analysis
+        edit_prompt_full = f"Based on this analysis: {analysis}\n\nApply these changes: {edit_prompt}"
+        
+        if ctx: ctx.info("Performing smart edit...")
+        
+        response = await client.images.edit(
+            model="gpt-image-1",
+            image=image_base64,
+            prompt=edit_prompt_full,
+            response_format="b64_json"
+        )
+        
+        b64_data = response.data[0].b64_json
+        
+        return {
+            "success": True,
+            "analysis": analysis,
+            "edited_image": f"data:image/png;base64,{b64_data}",
+            "source_file": str(image_path)
+        }
+        
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "source_file": str(image_path)
+        }
+
+@mcp.tool()
+async def transform_image(
+    image: str,
+    operation: Literal["resize", "rotate", "flip_horizontal", "flip_vertical", "grayscale", "blur", "sharpen", "contrast", "brightness"],
+    value: Optional[Union[int, float]] = None,
+    output_format: Literal["png", "jpeg", "webp"] = "png",
+    output_path: Optional[str] = None,
+    ctx: Context = None
+) -> Dict[str, Any]:
+    """Apply basic image transformations using PIL.
+    
+    Supports both local files and Google Drive files.
+    
+    Args:
+        image: Image to transform (file path, Google Drive URL/ID, or base64)
+        operation: Type of transformation to apply
+        value: Operation-specific value (degrees for rotate, factor for contrast/brightness)
+        output_format: Output image format
+        output_path: Optional absolute path to save result
+        
+    Returns:
+        Transformed image as base64 or file path
+    """
+    if not PIL_AVAILABLE:
+        return {"success": False, "error": "PIL/Pillow not available"}
+    
+    try:
+        image_path = await get_file_path(image)
+        
+        with PILImage.open(image_path) as img:
+            if operation == "resize" and value:
+                if isinstance(value, tuple):
+                    img = img.resize(value)
+                else:
+                    # Resize by percentage
+                    width = int(img.width * (value / 100))
+                    height = int(img.height * (value / 100))
+                    img = img.resize((width, height))
+                    
+            elif operation == "rotate" and value:
+                img = img.rotate(value, expand=True)
+                
+            elif operation == "flip_horizontal":
+                img = img.transpose(PILImage.FLIP_LEFT_RIGHT)
+                
+            elif operation == "flip_vertical":
+                img = img.transpose(PILImage.FLIP_TOP_BOTTOM)
+                
+            elif operation == "grayscale":
+                img = ImageOps.grayscale(img)
+                
+            elif operation == "blur":
+                from PIL import ImageFilter
+                img = img.filter(ImageFilter.BLUR)
+                
+            elif operation == "sharpen":
+                from PIL import ImageFilter
+                img = img.filter(ImageFilter.SHARPEN)
+                
+            elif operation == "contrast" and value:
+                from PIL import ImageEnhance
+                enhancer = ImageEnhance.Contrast(img)
+                img = enhancer.enhance(value)
+                
+            elif operation == "brightness" and value:
+                from PIL import ImageEnhance
+                enhancer = ImageEnhance.Brightness(img)
+                img = enhancer.enhance(value)
+            
+            # Save result
+            if output_path:
+                save_path = Path(output_path)
+                img.save(save_path, format=output_format.upper())
+                return {"success": True, "file_path": str(save_path)}
+            else:
+                # Return as base64
+                buffer = io.BytesIO()
+                img.save(buffer, format=output_format.upper())
+                buffer.seek(0)
+                b64_data = base64.b64encode(buffer.getvalue()).decode()
+                return {
+                    "success": True,
+                    "image": f"data:image/{output_format};base64,{b64_data}",
+                    "dimensions": f"{img.width}x{img.height}"
+                }
+                
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@mcp.tool()
+async def batch_process(
+    images: List[str],
+    operation: Literal["analyze", "extract_text", "transform", "resize"],
+    operation_params: Dict[str, Any],
+    ctx: Context = None
+) -> Dict[str, Any]:
+    """Process multiple images with the same operation.
+    
+    Supports both local files and Google Drive files.
+    
+    Args:
+        images: List of images (file paths, Google Drive URLs/IDs, or base64)
+        operation: Operation to perform on all images
+        operation_params: Parameters for the operation
+        
+    Returns:
+        Batch processing results for all images
+    """
+    results = []
+    total_images = len(images)
+    
+    for i, image in enumerate(images):
+        if ctx:
+            await ctx.report_progress(i + 1, total_images, f"Processing image {i + 1}/{total_images}")
+        
+        try:
+            if operation == "analyze":
+                result = await analyze_image(image, **operation_params)
+            elif operation == "extract_text":
+                result = await extract_text(image, **operation_params)
+            elif operation == "transform":
+                result = await transform_image(image, **operation_params)
+            elif operation == "resize":
+                result = await transform_image(image, operation="resize", **operation_params)
+            else:
+                raise ValueError(f"Unsupported operation: {operation}")
+                
+            results.append({
+                "image": image,
+                "success": True,
+                "result": result
+            })
+            
+        except Exception as e:
+            results.append({
+                "image": image,
+                "success": False,
+                "error": str(e)
+            })
+    
+    return {
+        "success": True,
+        "total_processed": total_images,
+        "successful": len([r for r in results if r["success"]]),
+        "failed": len([r for r in results if not r["success"]]),
+        "results": results
+    }
+
+@mcp.tool()
+async def image_metadata(
+    image: str,
+    ctx: Context = None
+) -> Dict[str, Any]:
+    """Extract comprehensive metadata and properties from images.
+    
+    Supports both local files and Google Drive files.
+    
+    Args:
+        image: Image to analyze (file path, Google Drive URL/ID, or base64)
+        
+    Returns:
+        Detailed image metadata including EXIF, dimensions, format, etc.
+    """
+    if not PIL_AVAILABLE:
+        return {"success": False, "error": "PIL/Pillow not available"}
+    
+    try:
+        image_path = await get_file_path(image)
+        
+        with PILImage.open(image_path) as img:
+            metadata = {
+                "success": True,
+                "file_path": str(image_path),
+                "format": img.format,
+                "mode": img.mode,
+                "size": {
+                    "width": img.width,
+                    "height": img.height,
+                    "total_pixels": img.width * img.height
+                },
+                "color_info": {
+                    "bands": img.getbands(),
+                    "palette": img.palette is not None
+                }
+            }
+            
+            # Get file system info
+            stat = image_path.stat()
+            metadata["file_info"] = {
+                "size_bytes": stat.st_size,
+                "size_kb": stat.st_size / 1024,
+                "size_mb": stat.st_size / 1024 / 1024,
+                "modified": stat.st_mtime,
+                "created": stat.st_ctime
+            }
+            
+            # Try to get EXIF data
+            try:
+                from PIL import ExifTags
+                exif = img._getexif()
+                if exif:
+                    exif_data = {}
+                    for tag_id, value in exif.items():
+                        tag = ExifTags.TAGS.get(tag_id, tag_id)
+                        exif_data[tag] = str(value)
+                    metadata["exif"] = exif_data
+            except:
+                metadata["exif"] = "No EXIF data found"
+            
+            return metadata
+            
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@mcp.tool()
+async def describe_and_recreate(
+    image: str,
+    style_modification: str,
+    ctx: Context = None
+) -> Dict[str, Any]:
+    """Analyze an image and recreate it with style modifications.
+    
+    Supports both local files and Google Drive files.
+    
+    Args:
+        image: Source image (file path, Google Drive URL/ID, or base64)
+        style_modification: Description of style changes to apply
+        
+    Returns:
+        Original description and recreated image with style modifications
+    """
+    app_context = get_app_context()
+    client = app_context.openai_client
+    
+    image_path = await get_file_path(image)
+    image_base64, mime_type = await load_image_as_base64(image_path)
+    
+    # First, describe the image
+    describe_prompt = "Provide a detailed, technical description of this image including: subject matter, composition, lighting, color palette, style, mood, and any specific visual elements. Be precise and comprehensive."
+    
+    try:
+        if ctx: ctx.info("Analyzing image for recreation...")
+        
+        description_response = await client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": describe_prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:{mime_type};base64,{image_base64}",
+                                "detail": "high"
+                            }
+                        }
+                    ]
+                }
+            ],
+            max_tokens=800
+        )
+        
+        original_description = description_response.choices[0].message.content
+        
+        # Now recreate with style modifications
+        recreate_prompt = f"Recreate this image: {original_description}\n\nApply these style modifications: {style_modification}"
+        
+        if ctx: ctx.info("Recreating image with style modifications...")
+        
+        response = await client.images.generate(
+            model="gpt-image-1",
+            prompt=recreate_prompt,
+            n=1,
+            response_format="b64_json"
+        )
+        
+        b64_data = response.data[0].b64_json
+        
+        return {
+            "success": True,
+            "original_description": original_description,
+            "style_modification": style_modification,
+            "recreated_image": f"data:image/png;base64,{b64_data}",
+            "source_file": str(image_path)
+        }
+        
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "source_file": str(image_path)
+        }
+
+@mcp.tool()
+async def prompt_from_image(
+    image: str,
+    purpose: str = "accurate recreation",
+    ctx: Context = None
+) -> Dict[str, Any]:
+    """Generate optimized prompts from images for AI image generation.
+    
+    Supports both local files and Google Drive files.
+    
+    Args:
+        image: Source image (file path, Google Drive URL/ID, or base64)
+        purpose: Purpose of the generated prompt (recreation, variation, improvement, etc.)
+        
+    Returns:
+        Optimized prompt for AI image generation
+    """
+    app_context = get_app_context()
+    client = app_context.openai_client
+    
+    image_path = await get_file_path(image)
+    image_base64, mime_type = await load_image_as_base64(image_path)
+    
+    prompt = f"Create an optimized text prompt for AI image generation that would recreate this image. Purpose: {purpose}. The prompt should be detailed, specific, and include: subject, composition, lighting, color palette, style, mood, and any technical details. Format it for best AI image generation results."
+    
+    try:
+        if ctx: ctx.info("Generating optimized prompt from image...")
+        
+        response = await client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:{mime_type};base64,{image_base64}",
+                                "detail": "high"
+                            }
+                        }
+                   ]
+                }
+            ],
+            max_tokens=1000
+        )
+        
+        generated_prompt = response.choices[0].message.content
+        
+        return {
+            "success": True,
+            "generated_prompt": generated_prompt,
+            "purpose": purpose,
+            "source_file": str(image_path)
+        }
+        
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "source_file": str(image_path)
+        }
+
+# =============================================================================
 # SERVER STARTUP
 # =============================================================================
 
