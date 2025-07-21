@@ -624,14 +624,15 @@ async def analyze_image(
 
 if __name__ == "__main__":
     import uvicorn
-    
-    port = int(os.getenv("PORT", 8000))
-    
-    logger.info("Starting Image Tool MCP Server for Railway deployment...")
-    logger.info("Available image processing tools:")
-    logger.info("- Generate images from text prompts")
-    logger.info("- Analyze images with AI vision")
-    logger.info(f"Server will run on port {port}")
-    
-    # Use FastMCP's built-in HTTP server
-    mcp.run(transport="http", host="0.0.0.0", port=port)
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--transport", choices=["http", "stdio"], default="http")
+    parser.add_argument("--port", type=int, default=int(os.getenv("PORT", 8000)))
+    args = parser.parse_args()
+
+    if args.transport == "stdio":
+        from fastmcp.server.stdio import MCPStdioServer
+        MCPStdioServer(mcp).run()
+    else:
+        mcp.run(transport="http", host="0.0.0.0", port=args.port)
