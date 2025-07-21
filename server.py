@@ -632,7 +632,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.transport == "stdio":
-        from fastmcp.server.stdio import MCPStdioServer
-        MCPStdioServer(mcp).run()
+        mcp.run(transport="stdio")
     else:
         mcp.run(transport="http", host="0.0.0.0", port=args.port)
