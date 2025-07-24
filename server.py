@@ -205,21 +205,33 @@ async def download_from_google_drive(file_id: str, drive_service) -> str:
         raise RuntimeError(f"Failed to download file from Google Drive: {e}")
 
 async def get_file_path(file_input: str) -> str:
-    """Universal file handler for local files and Google Drive files"""
+    """Universal file handler for local files, Google Drive files, and base64 data"""
     app_context = get_app_context()
     
-    # Check if it's a Google Drive file
+    # Validate input
+    if not file_input or not file_input.strip():
+        raise ValueError("File path cannot be empty")
+    
+    file_input = file_input.strip()
+    
+    # Security: Prevent path traversal attacks
+    if ".." in file_input:
+        raise ValueError("Invalid file path: potential security risk")
+    
+    # Handle Google Drive files
     drive_id = extract_google_drive_id(file_input)
     if drive_id:
         if not app_context.drive_service:
             raise RuntimeError("Google Drive service not available")
         return await download_from_google_drive(drive_id, app_context.drive_service)
     
-    # Handle local file path
-    if os.path.isfile(file_input):
+    # Handle local absolute paths (starting with /)
+    if file_input.startswith('/'):
+        if not os.path.exists(file_input):
+            raise FileNotFoundError(f"File not found: {file_input}")
         return file_input
     
-    # Handle base64 data
+    # Handle base64 data URLs
     if file_input.startswith('data:'):
         try:
             header, data = file_input.split(',', 1)
@@ -242,7 +254,8 @@ async def get_file_path(file_input: str) -> str:
         except Exception as e:
             raise ValueError(f"Invalid base64 data: {e}")
     
-    raise ValueError(f"File not found or invalid input: {file_input}")
+    # Reject relative paths and other potentially unsafe inputs
+    raise ValueError("Invalid file path: must be absolute path, Google Drive URL/ID, or base64 data")
 
 def initialize_app_context():
     """Initialize application context synchronously"""
@@ -381,20 +394,33 @@ async def load_image_as_base64(file_path: Union[str, Path]) -> tuple[str, str]:
     base64_data = base64.b64encode(image_data).decode()
     return base64_data, mime_type
 
-def validate_image_path(path: str) -> bool:
-    """Validate if path is absolute and points to valid image"""
-    if not os.path.isabs(path):
-        return False
+def validate_image_path(path: str) -> str:
+    """Validate file path input with security checks"""
+    if not path or not path.strip():
+        raise ValueError("File path cannot be empty")
     
-    if not os.path.exists(path):
-        return False
-        
-    try:
-        with PILImage.open(path) as img:
-            img.verify()
-        return True
-    except Exception:
-        return False
+    path = path.strip()
+    
+    # Security: Prevent path traversal attacks
+    if ".." in path:
+        raise ValueError("Invalid file path: potential security risk")
+    
+    # Allow local absolute paths (starting with /)
+    if path.startswith('/'):
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"File not found: {path}")
+        return path
+    
+    # Allow Google Drive URLs and IDs
+    if path.startswith(('https://drive.google.com/', 'drive://')):
+        return path
+    
+    # Allow base64 data URLs
+    if path.startswith('data:'):
+        return path
+    
+    # Reject relative paths and other potentially unsafe inputs
+    raise ValueError("Invalid file path: must be absolute path, Google Drive URL/ID, or base64 data")
 
 def is_base64_image(data: str) -> bool:
     """Check if string is valid base64 image data"""
@@ -573,18 +599,24 @@ async def analyze_image(
     file_path = await get_file_path(image)
     
     # Prepare image for API
-    if validate_image_path(file_path):
+    try:
+        # Validate the file path using the new unified approach
+        validated_path = validate_image_path(file_path)
+        
         # Load image file as base64
-        base64_data, mime_type = await load_image_as_base64(file_path)
+        base64_data, mime_type = await load_image_as_base64(validated_path)
         image_url = f"data:{mime_type};base64,{base64_data}"
-    elif is_base64_image(image):
-        if image.startswith("data:image/"):
-            image_url = image
+        
+    except (ValueError, FileNotFoundError) as e:
+        # If validation fails, try to handle as base64 data
+        if is_base64_image(image):
+            if image.startswith("data:image/"):
+                image_url = image
+            else:
+                # Add data URL prefix
+                image_url = f"data:image/png;base64,{image}"
         else:
-            # Add data URL prefix
-            image_url = f"data:image/png;base64,{image}"
-    else:
-        raise ValueError("image must be an absolute file path, Google Drive URL/ID, or base64 string")
+            raise ValueError(f"Invalid image input: {str(e)}")
     
     try:
         ctx.info(f"Analyzing image with model {model}...")
