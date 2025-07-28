@@ -6,7 +6,6 @@ A comprehensive Model Context Protocol server for image processing tasks using:
 - OpenAI gpt-image-1 for image generation and editing
 - GPT-4 Vision for image analysis and OCR
 - PIL for image manipulation and processing
-- Google Drive API for cloud file access
 - OAuth 2.0 authentication for Claude Web integration
 
 Features:
@@ -14,7 +13,6 @@ Features:
 - Advanced image editing with mask support and smart editing
 - Intelligent image analysis and OCR text extraction
 - Batch processing with progress tracking
-- Google Drive integration for cloud file access
 - Image format conversion and optimization
 
 Tools Available:
@@ -71,14 +69,6 @@ from fastmcp.server.auth.providers.bearer import RSAKeyPair
 from dotenv import load_dotenv
 
 # Google Drive integration with graceful fallbacks
-try:
-    from google.oauth2.credentials import Credentials
-    from googleapiclient.discovery import build
-    from google.oauth2 import service_account
-    GOOGLE_DRIVE_AVAILABLE = True
-except ImportError:
-    GOOGLE_DRIVE_AVAILABLE = False
-    logger.warning("Google Drive libraries not available - Google Drive integration disabled")
 
 # Image processing imports with graceful fallbacks
 try:
@@ -105,7 +95,6 @@ class AppContext(BaseModel):
     openai_client: Union[AsyncOpenAI, AsyncAzureOpenAI]
     temp_dir: Path
     http_client: Optional[httpx.AsyncClient] = None
-    drive_service: Optional[Any] = None
 
 # Global app context for FastMCP tools
 _global_app_context: Optional[AppContext] = None
@@ -115,121 +104,6 @@ def get_app_context() -> AppContext:
     if _global_app_context is not None:
         return _global_app_context
     raise RuntimeError("Application context not initialized")
-
-def setup_google_drive_service():
-    """Setup Google Drive service with authentication"""
-    if not GOOGLE_DRIVE_AVAILABLE:
-        return None
-        
-    try:
-        # Try service account credentials first
-        if os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON"):
-            try:
-                service_account_info = json.loads(os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON"))
-                credentials = service_account.Credentials.from_service_account_info(
-                    service_account_info,
-                    scopes=['https://www.googleapis.com/auth/drive.readonly']
-                )
-                service = build('drive', 'v3', credentials=credentials)
-                logger.info("Google Drive service initialized with service account")
-                return service
-            except Exception as e:
-                logger.error(f"Failed to setup Google Drive with service account: {e}")
-        
-        # Try service account file
-        if os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE"):
-            service_account_file = os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE")
-            try:
-                credentials = service_account.Credentials.from_service_account_file(
-                    service_account_file,
-                    scopes=['https://www.googleapis.com/auth/drive.readonly']
-                )
-                service = build('drive', 'v3', credentials=credentials)
-                logger.info(f"Google Drive service initialized with file: {service_account_file}")
-                return service
-            except Exception as e:
-                logger.error(f"Failed to setup Google Drive with file: {e}")
-        
-        logger.warning("No Google Drive credentials found. Integration disabled.")
-        return None
-        
-    except Exception as e:
-        logger.error(f"Failed to setup Google Drive service: {e}")
-        return None
-
-def extract_google_drive_id(file_input: str) -> Optional[str]:
-    """Extract Google Drive file ID from various input formats"""
-    # Direct file ID
-    if len(file_input) == 33 and file_input.isalnum():
-        return file_input
-    
-    # Google Drive URL patterns
-    patterns = [
-        r'drive\.google\.com/file/d/([a-zA-Z0-9_-]+)',
-        r'drive\.google\.com/open\?id=([a-zA-Z0-9_-]+)',
-        r'docs\.google\.com/.*?/d/([a-zA-Z0-9_-]+)'
-    ]
-    
-    for pattern in patterns:
-        match = re.search(pattern, file_input)
-        if match:
-            return match.group(1)
-    
-    return None
-
-async def download_from_google_drive(file_id: str, drive_service) -> str:
-    """Download file from Google Drive to temporary directory"""
-    if not drive_service:
-        raise RuntimeError("Google Drive service not available")
-    
-    try:
-        # Get file metadata
-        file_metadata = drive_service.files().get(fileId=file_id).execute()
-        file_name = file_metadata.get('name', f'drive_file_{file_id}')
-        
-        # Download file content
-        file_content = drive_service.files().get_media(fileId=file_id).execute()
-        
-        # Save to temp directory
-        app_context = get_app_context()
-        temp_path = app_context.temp_dir / file_name
-        
-        with open(temp_path, 'wb') as f:
-            f.write(file_content)
-        
-        logger.info(f"Downloaded Google Drive file: {file_name}")
-        return str(temp_path)
-        
-    except Exception as e:
-        logger.error(f"Failed to download file from Google Drive: {e}")
-        raise RuntimeError(f"Failed to download file from Google Drive: {e}")
-
-async def get_file_path(file_input: str) -> str:
-    """Universal file handler for local files, Google Drive files, and base64 data"""
-    app_context = get_app_context()
-    
-    # Validate input
-    if not file_input or not file_input.strip():
-        raise ValueError("File path cannot be empty")
-    
-    file_input = file_input.strip()
-    
-    # Security: Prevent path traversal attacks
-    if ".." in file_input:
-        raise ValueError("Invalid file path: potential security risk")
-    
-    # Handle Google Drive files
-    drive_id = extract_google_drive_id(file_input)
-    if drive_id:
-        if not app_context.drive_service:
-            raise RuntimeError("Google Drive service not available")
-        return await download_from_google_drive(drive_id, app_context.drive_service)
-    
-    # Handle local absolute paths (starting with /)
-    if file_input.startswith('/'):
-        if not os.path.exists(file_input):
-            raise FileNotFoundError(f"File not found: {file_input}")
-        return file_input
     
     # Handle base64 data URLs
     if file_input.startswith('data:'):
