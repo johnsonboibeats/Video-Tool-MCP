@@ -104,7 +104,9 @@ def get_app_context() -> AppContext:
     if _global_app_context is not None:
         return _global_app_context
     raise RuntimeError("Application context not initialized")
-    
+
+async def handle_file_input(file_input: str, app_context: AppContext) -> str:
+    """Handle file input: base64 data, absolute paths, or Google Drive URLs"""
     # Handle base64 data URLs
     if file_input.startswith('data:'):
         try:
@@ -129,7 +131,7 @@ def get_app_context() -> AppContext:
             raise ValueError(f"Invalid base64 data: {e}")
     
     # Reject relative paths and other potentially unsafe inputs
-    raise ValueError("Invalid file path: must be absolute path, Google Drive URL/ID, or base64 data")
+    raise ValueError("Invalid file path: must be absolute path or base64 data")
 
 def initialize_app_context():
     """Initialize application context synchronously"""
@@ -151,13 +153,6 @@ def initialize_app_context():
         temp_dir.mkdir(parents=True, exist_ok=True)
         logger.info(f"Temporary directory: {temp_dir}")
         
-        # Setup Google Drive service
-        drive_service = setup_google_drive_service()
-        if drive_service:
-            logger.info("Google Drive service initialized successfully")
-        else:
-            logger.info("Google Drive service not available - continuing without it")
-        
         # Create HTTP client
         http_client = httpx.AsyncClient() if HTTPX_AVAILABLE else None
         
@@ -165,8 +160,7 @@ def initialize_app_context():
         context = AppContext(
             openai_client=client,
             temp_dir=temp_dir,
-            http_client=http_client,
-            drive_service=drive_service
+            http_client=http_client
         )
         
         # Set global context for FastMCP tools
@@ -294,7 +288,7 @@ def validate_image_path(path: str) -> str:
         return path
     
     # Reject relative paths and other potentially unsafe inputs
-    raise ValueError("Invalid file path: must be absolute path, Google Drive URL/ID, or base64 data")
+    raise ValueError("Invalid file path: must be absolute path or base64 data")
 
 def is_base64_image(data: str) -> bool:
     """Check if string is valid base64 image data"""
