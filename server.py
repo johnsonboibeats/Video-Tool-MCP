@@ -224,13 +224,8 @@ def setup_authentication():
         logger.warning(f"Authentication setup failed, running without auth: {e}")
         return None
 
-# Create FastMCP server instance with proper configuration
-auth_provider = setup_authentication()
-
-mcp = FastMCP(
-    name="Image Tool MCP",
-    auth=auth_provider
-)
+# Create FastMCP server
+mcp = FastMCP("Image Tool MCP")
 
 # =============================================================================
 # UTILITY FUNCTIONS
