@@ -224,6 +224,11 @@ def setup_authentication():
         logger.warning(f"Authentication setup failed, running without auth: {e}")
         return None
 
+# API Key for authentication
+API_KEY = os.getenv('API_KEY')
+if not API_KEY:
+    logger.warning("API_KEY not set - server will be unauthenticated")
+
 # Create FastMCP server
 mcp = FastMCP("Image Tool MCP")
 
