@@ -68,7 +68,6 @@ from fastmcp.server.auth import BearerAuthProvider
 from fastmcp.server.auth.providers.bearer import RSAKeyPair
 from dotenv import load_dotenv
 
-# Google Drive integration with graceful fallbacks
 
 # Image processing imports with graceful fallbacks
 try:
@@ -106,7 +105,7 @@ def get_app_context() -> AppContext:
     raise RuntimeError("Application context not initialized")
 
 async def handle_file_input(file_input: str, app_context: AppContext) -> str:
-    """Handle file input: base64 data, absolute paths, or Google Drive URLs"""
+    """Handle file input: base64 data and absolute paths"""
     # Handle base64 data URLs
     if file_input.startswith('data:'):
         try:
@@ -279,10 +278,7 @@ def validate_image_path(path: str) -> str:
             raise FileNotFoundError(f"File not found: {path}")
         return path
     
-    # Allow Google Drive URLs and IDs
-    if path.startswith(('https://drive.google.com/', 'drive://')):
-        return path
-    
+        
     # Allow base64 data URLs
     if path.startswith('data:'):
         return path
