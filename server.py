@@ -258,7 +258,7 @@ logger.info("Security middleware configured")
 logger.info("FastMCP server instance created and configured")
 logger.info("Custom routes registered: /health, /")
 
-@mcp.custom_route("/health")
+@mcp.custom_route("/health", methods=["GET"])
 async def health_check(request: Request):
     """Health check endpoint for Railway deployment"""
     logger.info("Health check endpoint called")
@@ -281,7 +281,7 @@ async def health_check(request: Request):
         logger.error(f"Health check error: {e}")
         return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
 
-@mcp.custom_route("/")
+@mcp.custom_route("/", methods=["GET"])
 async def root_endpoint(request: Request):
     """Root endpoint for basic connectivity test"""
     logger.info("Root endpoint called")

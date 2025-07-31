@@ -28,7 +28,7 @@
     "builder": "NIXPACKS"
   },
   "deploy": {
-    "startCommand": "python simple_server.py",
+    "startCommand": "python server.py",
     "healthcheckPath": "/health",
     "healthcheckTimeout": 300
   }
