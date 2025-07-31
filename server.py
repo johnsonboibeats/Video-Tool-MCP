@@ -102,6 +102,11 @@ def get_app_context() -> AppContext:
         return _global_app_context
     raise RuntimeError("Application context not initialized")
 
+def check_openai_client(client) -> None:
+    """Check if OpenAI client is available"""
+    if client is None:
+        raise ValueError("OpenAI API key not configured. Please set OPENAI_API_KEY environment variable.")
+
 async def handle_file_input(file_input: str, app_context: AppContext) -> str:
     """Handle file input: base64 data and absolute paths"""
     # Handle base64 data URLs
@@ -141,9 +146,12 @@ def initialize_app_context():
                 azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT", "")
             )
             logger.info("Initialized Azure OpenAI client")
-        else:
+        elif os.getenv("OPENAI_API_KEY"):
             client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
             logger.info("Initialized OpenAI client")
+        else:
+            logger.warning("No OpenAI API key found - image tools will not function")
+            client = None
         
         # Setup temp directory
         temp_dir = Path(os.getenv("MCP_TEMP_DIR", tempfile.gettempdir())) / "image_tool_mcp"
@@ -383,6 +391,7 @@ async def create_image(
     app_context = get_app_context()
     
     client = app_context.openai_client
+    check_openai_client(client)
     temp_dir = app_context.temp_dir
     
     # Validate inputs
@@ -500,6 +509,7 @@ async def analyze_image(
     app_context = get_app_context()
     
     client = app_context.openai_client
+    check_openai_client(client)
     
     # Get file path (handles Google Drive files, local files, and base64)
     file_path = await get_file_path(image)
