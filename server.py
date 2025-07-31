@@ -251,9 +251,12 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         client_ip = request.client.host if request.client else "unknown"
         user_agent = request.headers.get("user-agent", "unknown")
         
-        # Log MCP requests (but not health checks to avoid spam)
+        # Log all requests except health checks
         if request.url.path != "/health":
             logger.info(f"Request from {client_ip} - {user_agent} - {request.method} {request.url.path}")
+        else:
+            # Log health checks at debug level
+            logger.debug(f"Health check from {client_ip}")
         
         return await call_next(request)
 
@@ -271,14 +274,37 @@ mcp.add_middleware(RequestLoggingMiddleware)
 
 logger.info("Security middleware configured")
 
-@mcp.custom_route("/health", methods=["GET"])
+@mcp.custom_route("/health")
 async def health_check(request: Request):
     """Health check endpoint for Railway deployment"""
+    logger.info("Health check endpoint called")
+    try:
+        response_data = {
+            "status": "healthy",
+            "timestamp": time.time(),
+            "server": "Image Tool MCP Server"
+        }
+        
+        # Safely check OpenAI configuration
+        try:
+            response_data["openai_configured"] = _global_app_context.openai_client is not None if _global_app_context else False
+        except:
+            response_data["openai_configured"] = False
+            
+        logger.info(f"Health check response: {response_data}")
+        return JSONResponse(response_data)
+    except Exception as e:
+        logger.error(f"Health check error: {e}")
+        return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
+
+@mcp.custom_route("/")
+async def root_endpoint(request: Request):
+    """Root endpoint for basic connectivity test"""
+    logger.info("Root endpoint called")
     return JSONResponse({
-        "status": "healthy",
-        "timestamp": time.time(),
-        "server": "Image Tool MCP Server",
-        "openai_configured": _global_app_context.openai_client is not None if _global_app_context else False
+        "message": "Image Tool MCP Server is running",
+        "health_check": "/health",
+        "mcp_endpoint": "/mcp/"
     })
 
 # =============================================================================
