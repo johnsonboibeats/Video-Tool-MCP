@@ -179,7 +179,18 @@ def initialize_app_context():
         raise
 
 # Initialize application context at startup
-initialize_app_context()
+try:
+    initialize_app_context()
+    logger.info("Application context initialized successfully")
+except Exception as e:
+    logger.error(f"Failed to initialize application context: {e}")
+    logger.warning("Server will start but image tools may not function properly")
+    # Create a minimal context to allow server to start
+    _global_app_context = AppContext(
+        openai_client=None,
+        temp_dir=Path(tempfile.gettempdir()) / "image_tool_mcp",
+        http_client=None
+    )
 
 # Railway security configuration
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "https://claude.ai,https://web.claude.ai").split(",")
@@ -262,11 +273,13 @@ logger.info("Security middleware configured")
 
 @mcp.custom_route("/health", methods=["GET"])
 async def health_check(request: Request):
-    return JSONResponse({"status": "ok", "timestamp": time.time()})
-
-@mcp.custom_route("/health", methods=["GET"])
-async def health_check(request=None):
-    return {"status": "ok", "timestamp": time.time()}
+    """Health check endpoint for Railway deployment"""
+    return JSONResponse({
+        "status": "healthy",
+        "timestamp": time.time(),
+        "server": "Image Tool MCP Server",
+        "openai_configured": _global_app_context.openai_client is not None if _global_app_context else False
+    })
 
 # =============================================================================
 # UTILITY FUNCTIONS
@@ -1310,12 +1323,25 @@ if __name__ == "__main__":
     import uvicorn
     import argparse
 
+    # Get port from environment (Railway sets this automatically)
+    port = int(os.getenv("PORT", 8000))
+    host = os.getenv("HOST", "0.0.0.0")
+    
+    logger.info(f"Starting server on {host}:{port}")
+    logger.info(f"Health check available at: http://{host}:{port}/health")
+    logger.info(f"MCP endpoint available at: http://{host}:{port}/mcp/")
+    
     parser = argparse.ArgumentParser()
     parser.add_argument("--transport", choices=["http", "stdio"], default="http")
-    parser.add_argument("--port", type=int, default=int(os.getenv("PORT", 8000)))
+    parser.add_argument("--port", type=int, default=port)
+    parser.add_argument("--host", type=str, default=host)
     args = parser.parse_args()
 
     if args.transport == "stdio":
         mcp.run(transport="stdio")
     else:
-        mcp.run(transport="http", host="0.0.0.0", port=args.port)
+        try:
+            mcp.run(transport="http", host=args.host, port=args.port)
+        except Exception as e:
+            logger.error(f"Failed to start server: {e}")
+            raise
