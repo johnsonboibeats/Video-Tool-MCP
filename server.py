@@ -231,6 +231,17 @@ if not API_KEY:
 # Create FastMCP server
 mcp = FastMCP("Image Tool MCP")
 
+from starlette.requests import Request
+from starlette.responses import JSONResponse
+
+@mcp.custom_route("/health", methods=["GET"])
+async def health_check(request: Request):
+    return JSONResponse({"status": "ok"})
+
+@mcp.custom_route("/health", methods=["GET"])
+async def health_check(request=None):
+    return {"status": "ok"}
+
 # =============================================================================
 # UTILITY FUNCTIONS
 # =============================================================================
