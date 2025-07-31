@@ -1,36 +1,11 @@
 #!/usr/bin/env python3
 """
-Image Tool MCP Server with OAuth 2.0 for Claude Web Integration
-
-A comprehensive Model Context Protocol server for image processing tasks using:
-- OpenAI gpt-image-1 for image generation and editing
-- GPT-4 Vision for image analysis and OCR
-- PIL for image manipulation and processing
-- OAuth 2.0 authentication for Claude Web integration
-
-Features:
-- High-quality image generation with customizable parameters
-- Advanced image editing with mask support and smart editing
-- Intelligent image analysis and OCR text extraction
-- Batch processing with progress tracking
-- Image format conversion and optimization
-
-Tools Available:
-1. create-image - Generate images from text prompts
-2. edit-image - Edit existing images with prompts and masks
-3. analyze-image - Analyze images with AI vision
-4. extract-text - OCR text extraction from images
-5. compare-images - Compare two images and analyze differences
-6. smart-edit - Intelligent image editing with analysis
-7. generate-variations - Create variations of existing images
-8. transform-image - Basic image transformations
-9. batch-process - Process multiple images with same operation
-10. image-metadata - Extract image metadata and properties
-11. describe-and-recreate - Analyze and recreate images with style modifications
-12. prompt-from-image - Generate optimized prompts from images
+Image Tool MCP Server - Simplified Railway Deploy Version
 """
 
-# Suppress known warnings for cleaner deployment logs
+print("🔧 Image Tool MCP Server - Starting...")
+
+# Suppress warnings for cleaner deployment
 import warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 warnings.filterwarnings("ignore", message=".*not JSON serializable.*", category=UserWarning)
@@ -53,6 +28,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Union
 from pydantic import BaseModel, ConfigDict
 
+print("🔍 Python standard library imports completed")
+
 # Configure logging early
 logging.basicConfig(
     level=logging.INFO,
@@ -60,11 +37,24 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+print("📋 Logging configured")
+
 # Core imports
-import aiofiles
-from openai import AsyncOpenAI, AsyncAzureOpenAI
-from fastmcp import FastMCP, Context
-from dotenv import load_dotenv
+print("🚀 Loading core dependencies...")
+try:
+    import aiofiles
+    print("✅ aiofiles imported")
+    from openai import AsyncOpenAI, AsyncAzureOpenAI
+    print("✅ OpenAI client imported")
+    from fastmcp import FastMCP, Context
+    print("✅ FastMCP imported")
+    from dotenv import load_dotenv
+    print("✅ dotenv imported")
+    print("🎉 All core imports successful!")
+except Exception as e:
+    print(f"❌ CRITICAL: Core import failed: {e}")
+    logger.error(f"Core import failed: {e}")
+    raise
 
 
 # Image processing imports with graceful fallbacks
@@ -205,7 +195,7 @@ mcp = FastMCP("Image Tool MCP")
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.middleware.cors import CORSMiddleware
+# Removed CORS middleware for simplified Railway deployment
 from collections import defaultdict
 
 # =============================================================================
@@ -214,10 +204,10 @@ from collections import defaultdict
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
     """Simple rate limiting middleware"""
-    def __init__(self, app, max_requests: int = 100, window: int = 60):
+    def __init__(self, app):
         super().__init__(app)
-        self.max_requests = max_requests
-        self.window = window
+        self.max_requests = 100
+        self.window = 60
         self.requests = defaultdict(list)
 
     async def dispatch(self, request: Request, call_next):
@@ -260,19 +250,13 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         
         return await call_next(request)
 
-# Add security middleware
-mcp.add_middleware(
-    CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["*"],
-)
-
-mcp.add_middleware(RateLimitMiddleware, max_requests=MAX_REQUESTS_PER_MINUTE, window=60)
+# Add basic middleware for Railway deployment
+mcp.add_middleware(RateLimitMiddleware)
 mcp.add_middleware(RequestLoggingMiddleware)
 
 logger.info("Security middleware configured")
+logger.info("FastMCP server instance created and configured")
+logger.info("Custom routes registered: /health, /")
 
 @mcp.custom_route("/health")
 async def health_check(request: Request):
@@ -1346,28 +1330,31 @@ async def prompt_from_image(
 # =============================================================================
 
 if __name__ == "__main__":
-    import uvicorn
-    import argparse
-
     # Get port from environment (Railway sets this automatically)
     port = int(os.getenv("PORT", 8000))
     host = os.getenv("HOST", "0.0.0.0")
     
-    logger.info(f"Starting server on {host}:{port}")
-    logger.info(f"Health check available at: http://{host}:{port}/health")
-    logger.info(f"MCP endpoint available at: http://{host}:{port}/mcp/")
+    logger.info("=" * 50)
+    logger.info("STARTING IMAGE TOOL MCP SERVER")
+    logger.info("=" * 50)
+    logger.info(f"Server configuration:")
+    logger.info(f"  Host: {host}")
+    logger.info(f"  Port: {port}")
+    logger.info(f"  OpenAI configured: {_global_app_context.openai_client is not None if _global_app_context else 'Context not initialized'}")
+    logger.info(f"  Temp directory: {_global_app_context.temp_dir if _global_app_context else 'Not set'}")
+    logger.info("Available endpoints:")
+    logger.info(f"  Health check: http://{host}:{port}/health")
+    logger.info(f"  Root: http://{host}:{port}/")
+    logger.info(f"  MCP: http://{host}:{port}/mcp/")
+    logger.info("=" * 50)
     
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--transport", choices=["http", "stdio"], default="http")
-    parser.add_argument("--port", type=int, default=port)
-    parser.add_argument("--host", type=str, default=host)
-    args = parser.parse_args()
-
-    if args.transport == "stdio":
-        mcp.run(transport="stdio")
-    else:
-        try:
-            mcp.run(transport="http", host=args.host, port=args.port)
-        except Exception as e:
-            logger.error(f"Failed to start server: {e}")
-            raise
+    try:
+        # Force startup with minimal configuration
+        logger.info("Attempting to start FastMCP server...")
+        mcp.run(transport="http", host=host, port=port)
+    except Exception as e:
+        logger.error(f"CRITICAL ERROR - Failed to start server: {e}")
+        logger.error(f"Error type: {type(e).__name__}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        raise
