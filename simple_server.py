@@ -14,7 +14,7 @@ print("🔧 Starting minimal MCP server...")
 # Initialize FastMCP
 mcp = FastMCP("Image Tool MCP Server")
 
-@mcp.custom_route("/health")
+@mcp.custom_route("/health", methods=["GET"])
 async def health_check(request: Request):
     """Health check endpoint"""
     return JSONResponse({
@@ -24,7 +24,7 @@ async def health_check(request: Request):
         "version": "minimal-test"
     })
 
-@mcp.custom_route("/")
+@mcp.custom_route("/", methods=["GET"])
 async def root(request: Request):
     """Root endpoint"""
     return JSONResponse({
