@@ -64,8 +64,6 @@ logger = logging.getLogger(__name__)
 import aiofiles
 from openai import AsyncOpenAI, AsyncAzureOpenAI
 from fastmcp import FastMCP, Context
-from fastmcp.server.auth import BearerAuthProvider
-from fastmcp.server.auth.providers.bearer import RSAKeyPair
 from dotenv import load_dotenv
 
 
@@ -175,72 +173,92 @@ def initialize_app_context():
 # Initialize application context at startup
 initialize_app_context()
 
-# Setup authentication for FastMCP server
-def setup_authentication():
-    """Setup Bearer authentication for FastMCP server"""
-    try:
-        # For production, you would use your OAuth provider's JWKS URI
-        # For development, we'll generate a key pair
-        if os.getenv("FASTMCP_AUTH_JWKS_URI"):
-            # Production: Use OAuth provider
-            auth = BearerAuthProvider(
-                jwks_uri=os.getenv("FASTMCP_AUTH_JWKS_URI"),
-                issuer=os.getenv("FASTMCP_AUTH_ISSUER"),
-                audience=os.getenv("FASTMCP_AUTH_AUDIENCE", "image-tool-mcp")
-            )
-            logger.info("Using production OAuth authentication")
-        else:
-            # Development: Generate key pair
-            key_pair = RSAKeyPair.generate()
-            
-            # Save the key pair for development (in production, this would be managed externally)
-            if not os.path.exists(".dev-auth"):
-                os.makedirs(".dev-auth")
-            
-            with open(".dev-auth/public_key.pem", "w") as f:
-                f.write(key_pair.public_key)
-            
-            # Generate a test token
-            access_token = key_pair.create_token(
-                audience="image-tool-mcp",
-                scopes=["image:read", "image:write", "drive:read"]
-            )
-            
-            # Save test token for development
-            with open(".dev-auth/test_token.txt", "w") as f:
-                f.write(access_token)
-            
-            auth = BearerAuthProvider(
-                public_key=key_pair.public_key,
-                audience="image-tool-mcp"
-            )
-            
-            logger.info("Using development authentication")
-            logger.info(f"Development token saved to .dev-auth/test_token.txt")
-            
-        return auth
-    except Exception as e:
-        logger.warning(f"Authentication setup failed, running without auth: {e}")
-        return None
+# Railway security configuration
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "https://claude.ai,https://web.claude.ai").split(",")
+MAX_REQUESTS_PER_MINUTE = int(os.getenv("MAX_REQUESTS_PER_MINUTE", "100"))
 
-# API Key for authentication
-API_KEY = os.getenv('API_KEY')
-if not API_KEY:
-    logger.warning("API_KEY not set - server will be unauthenticated")
+logger.info(f"CORS allowed origins: {ALLOWED_ORIGINS}")
+logger.info(f"Rate limit: {MAX_REQUESTS_PER_MINUTE} requests per minute")
 
 # Create FastMCP server
 mcp = FastMCP("Image Tool MCP")
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.cors import CORSMiddleware
+from collections import defaultdict
+
+# =============================================================================
+# SECURITY MIDDLEWARE
+# =============================================================================
+
+class RateLimitMiddleware(BaseHTTPMiddleware):
+    """Simple rate limiting middleware"""
+    def __init__(self, app, max_requests: int = 100, window: int = 60):
+        super().__init__(app)
+        self.max_requests = max_requests
+        self.window = window
+        self.requests = defaultdict(list)
+
+    async def dispatch(self, request: Request, call_next):
+        # Skip rate limiting for health checks
+        if request.url.path == "/health":
+            return await call_next(request)
+        
+        client_ip = request.client.host if request.client else "unknown"
+        now = time.time()
+        
+        # Clean old requests
+        self.requests[client_ip] = [
+            req_time for req_time in self.requests[client_ip] 
+            if now - req_time < self.window
+        ]
+        
+        # Check rate limit
+        if len(self.requests[client_ip]) >= self.max_requests:
+            logger.warning(f"Rate limit exceeded for {client_ip}")
+            return JSONResponse(
+                {"error": "Rate limit exceeded. Please try again later."}, 
+                status_code=429
+            )
+        
+        self.requests[client_ip].append(now)
+        return await call_next(request)
+
+class RequestLoggingMiddleware(BaseHTTPMiddleware):
+    """Log requests for monitoring"""
+    async def dispatch(self, request: Request, call_next):
+        client_ip = request.client.host if request.client else "unknown"
+        user_agent = request.headers.get("user-agent", "unknown")
+        
+        # Log MCP requests (but not health checks to avoid spam)
+        if request.url.path != "/health":
+            logger.info(f"Request from {client_ip} - {user_agent} - {request.method} {request.url.path}")
+        
+        return await call_next(request)
+
+# Add security middleware
+mcp.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
+)
+
+mcp.add_middleware(RateLimitMiddleware, max_requests=MAX_REQUESTS_PER_MINUTE, window=60)
+mcp.add_middleware(RequestLoggingMiddleware)
+
+logger.info("Security middleware configured")
 
 @mcp.custom_route("/health", methods=["GET"])
 async def health_check(request: Request):
-    return JSONResponse({"status": "ok"})
+    return JSONResponse({"status": "ok", "timestamp": time.time()})
 
 @mcp.custom_route("/health", methods=["GET"])
 async def health_check(request=None):
-    return {"status": "ok"}
+    return {"status": "ok", "timestamp": time.time()}
 
 # =============================================================================
 # UTILITY FUNCTIONS
@@ -308,6 +326,19 @@ def is_base64_image(data: str) -> bool:
         return True
     except Exception:
         return False
+
+async def get_file_path(file_input: str) -> str:
+    """Handle file input and return local file path"""
+    if not file_input:
+        raise ValueError("File input cannot be empty")
+    
+    # Handle base64 data URLs by converting to temp file
+    if file_input.startswith('data:'):
+        app_context = get_app_context()
+        return await handle_file_input(file_input, app_context)
+    
+    # Validate and return absolute paths
+    return validate_image_path(file_input)
 
 # =============================================================================
 # IMAGE PROCESSING TOOLS

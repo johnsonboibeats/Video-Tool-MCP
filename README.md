@@ -25,6 +25,8 @@ A comprehensive Model Context Protocol (MCP) server for image processing tasks, 
 - `PORT`: Server port - defaults to `8080`
 - `MCP_TEMP_DIR`: Temporary directory for file processing
 - `RAILWAY_PUBLIC_DOMAIN`: Auto-detected for Railway deployments
+- `ALLOWED_ORIGINS`: Comma-separated list of allowed CORS origins - defaults to `https://claude.ai,https://web.claude.ai`
+- `MAX_REQUESTS_PER_MINUTE`: Rate limit for API requests - defaults to `100`
 
 ## Deployment
 
@@ -72,12 +74,17 @@ Add to your Claude Desktop MCP settings:
 {
   "mcpServers": {
     "image-tool": {
-      "url": "https://your-app.up.railway.app/mcp/",
-      "headers": {
-        "Authorization": "Bearer your-oauth-token"
-      }
+      "url": "https://your-app.up.railway.app/mcp/"
     }
   }
+}
+```
+
+**Claude Web Configuration:**
+```json
+{
+  "type": "url",
+  "url": "https://your-app.up.railway.app/mcp/"
 }
 ```
 
@@ -149,10 +156,10 @@ Comprehensive image analysis using Vision API.
 
 - **Input Validation**: Comprehensive validation for all parameters
 - **Path Traversal Protection**: Prevents directory traversal attacks
-- **CORS Configuration**: Proper cross-origin resource sharing
-- **Security Headers**: HTTP security headers for protection
-- **OAuth 2.0**: Industry-standard authentication
-- **Rate Limiting**: Built-in protection against abuse
+- **CORS Configuration**: Restricts access to allowed origins (Claude Web by default)
+- **Rate Limiting**: Built-in protection against abuse (100 requests/minute by default)
+- **Request Logging**: Monitor access patterns and detect unusual activity
+- **Railway Domain Security**: Uses Railway's hard-to-guess domain format for security through obscurity
 
 ## Error Handling
 

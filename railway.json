@@ -14,6 +14,14 @@
     "PORT": {
       "value": "8000",
       "isOptional": true
+    },
+    "ALLOWED_ORIGINS": {
+      "value": "https://claude.ai,https://web.claude.ai",
+      "isOptional": true
+    },
+    "MAX_REQUESTS_PER_MINUTE": {
+      "value": "100",
+      "isOptional": true
     }
   },
   "build": {
