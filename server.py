@@ -297,7 +297,62 @@ async def root_endpoint(request: Request):
         "mcp_endpoint": "/mcp/"
     })
 
-# Removed OAuth endpoints - Claude Web doesn't need them, simple FastMCP works better
+@mcp.custom_route("/mcp", methods=["GET", "HEAD", "POST"])
+async def mcp_redirect(request: Request):
+    """Handle MCP endpoint redirects"""
+    logger.info(f"MCP redirect called: {request.method} {request.url.path}")
+    
+    if request.method == "HEAD":
+        # Return 200 for HEAD requests to /mcp
+        return JSONResponse({"status": "ok"}, status_code=200)
+    elif request.method == "POST":
+        # Redirect POST requests to /mcp/
+        return JSONResponse({"redirect": "/mcp/"}, status_code=307)
+    else:
+        # Redirect GET requests to /mcp/
+        return JSONResponse({"redirect": "/mcp/"}, status_code=307)
+
+# =============================================================================
+# OAUTH DISCOVERY ENDPOINTS (for Claude compatibility)
+# =============================================================================
+
+@mcp.custom_route("/.well-known/oauth-authorization-server", methods=["GET"])
+async def oauth_discovery(request: Request):
+    """OAuth discovery endpoint for Claude compatibility"""
+    logger.info("OAuth discovery endpoint called")
+    return JSONResponse({
+        "issuer": "https://claude.ai",
+        "authorization_endpoint": "https://claude.ai/oauth/authorize",
+        "token_endpoint": "https://claude.ai/oauth/token",
+        "jwks_uri": "https://claude.ai/.well-known/jwks.json",
+        "response_types_supported": ["code"],
+        "subject_types_supported": ["public"],
+        "id_token_signing_alg_values_supported": ["RS256"]
+    })
+
+@mcp.custom_route("/.well-known/oauth-authorization-server/mcp", methods=["GET"])
+async def oauth_discovery_mcp(request: Request):
+    """OAuth discovery endpoint for MCP path"""
+    return await oauth_discovery(request)
+
+@mcp.custom_route("/.well-known/oauth-protected-resource/mcp", methods=["GET"])
+async def oauth_protected_resource(request: Request):
+    """OAuth protected resource endpoint for Claude compatibility"""
+    logger.info("OAuth protected resource endpoint called")
+    return JSONResponse({
+        "resource": "mcp",
+        "scopes": ["read", "write"],
+        "token_endpoint": "https://claude.ai/oauth/token"
+    })
+
+@mcp.custom_route("/register", methods=["POST"])
+async def register_endpoint(request: Request):
+    """Registration endpoint for Claude compatibility"""
+    logger.info("Registration endpoint called")
+    return JSONResponse({
+        "status": "success",
+        "message": "Registration not required for this MCP server"
+    })
 
 # =============================================================================
 # UTILITY FUNCTIONS

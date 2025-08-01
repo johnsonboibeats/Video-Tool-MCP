@@ -12,7 +12,7 @@
       "isOptional": true
     },
     "PORT": {
-      "value": "8000",
+      "value": "8080",
       "isOptional": true
     },
     "ALLOWED_ORIGINS": {
@@ -28,8 +28,10 @@
     "builder": "NIXPACKS"
   },
   "deploy": {
-    "startCommand": "python server.py",
+    "startCommand": "python server.py --port $PORT",
     "healthcheckPath": "/health",
-    "healthcheckTimeout": 300
+    "healthcheckTimeout": 300,
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 3
   }
 }
