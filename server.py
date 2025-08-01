@@ -30,10 +30,15 @@ from typing import Any, Dict, List, Literal, Optional, Union
 from pydantic import BaseModel, ConfigDict
 
 
-# Configure logging early - check for stdio mode to avoid polluting stdout
+# Configure logging early - in stdio mode, log to stderr to avoid polluting stdout
 import sys
 if "--transport" in sys.argv and "stdio" in sys.argv:
-    logging.basicConfig(level=logging.CRITICAL)
+    # In stdio mode, log to stderr so it doesn't interfere with JSON-RPC on stdout
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        stream=sys.stderr
+    )
 else:
     logging.basicConfig(
         level=logging.INFO,
@@ -1338,10 +1343,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     
     if args.transport == "stdio":
-        # In stdio mode, disable all logging to avoid polluting stdout for JSON-RPC
-        logging.getLogger().setLevel(logging.CRITICAL)
-        logging.getLogger("__main__").setLevel(logging.CRITICAL)
-        logging.getLogger("fastmcp").setLevel(logging.CRITICAL)
+        # In stdio mode, logging goes to stderr (configured above)
         mcp.run(transport="stdio")
     else:
         # HTTP mode - show configuration
