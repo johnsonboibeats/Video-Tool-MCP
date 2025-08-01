@@ -1,4 +1,5 @@
-fastmcp>=0.4.0
+fastmcp>=2.8.0
+uvicorn
 openai>=1.97.0
 pillow>=11.3.0
 httpx>=0.28.1

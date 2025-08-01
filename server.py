@@ -1329,11 +1329,11 @@ async def prompt_from_image(
 if __name__ == "__main__":
     # Parse command line arguments
     parser = argparse.ArgumentParser(description="Image Tool MCP Server")
-    parser.add_argument("--transport", default="http", choices=["http", "stdio"], 
+    parser.add_argument("--transport", default="streamable-http", choices=["http", "stdio", "streamable-http"], 
                        help="Transport method (http or stdio)")
     parser.add_argument("--host", default=os.getenv("HOST", "0.0.0.0"),
                        help="Host to bind to (http mode only)")
-    parser.add_argument("--port", type=int, default=int(os.getenv("PORT", 8080)),
+    parser.add_argument("--port", type=int, default=int(os.getenv("PORT", 8000)),
                        help="Port to bind to (http mode only)")
     
     args = parser.parse_args()
@@ -1347,6 +1347,7 @@ if __name__ == "__main__":
         logger.info("STARTING IMAGE TOOL MCP SERVER")
         logger.info("=" * 50)
         logger.info(f"Server configuration:")
+        logger.info(f"  Transport: {args.transport}")
         logger.info(f"  Host: {args.host}")
         logger.info(f"  Port: {args.port}")
         logger.info(f"  OpenAI configured: {_global_app_context.openai_client is not None if _global_app_context else 'Context not initialized'}")
@@ -1359,7 +1360,7 @@ if __name__ == "__main__":
         
         try:
             logger.info("Attempting to start FastMCP server...")
-            mcp.run(transport="http", host=args.host, port=args.port)
+            mcp.run(transport=args.transport, host=args.host, port=args.port, path="/mcp")
         except Exception as e:
             logger.error(f"CRITICAL ERROR - Failed to start server: {e}")
             logger.error(f"Error type: {type(e).__name__}")
