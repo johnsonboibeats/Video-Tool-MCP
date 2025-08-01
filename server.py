@@ -9,6 +9,7 @@ import warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 warnings.filterwarnings("ignore", message=".*not JSON serializable.*", category=UserWarning)
 
+import argparse
 import asyncio
 import base64
 import hashlib
@@ -20,6 +21,7 @@ import os
 import re
 import secrets
 import string
+import sys
 import tempfile
 import time
 from contextlib import asynccontextmanager
@@ -28,11 +30,15 @@ from typing import Any, Dict, List, Literal, Optional, Union
 from pydantic import BaseModel, ConfigDict
 
 
-# Configure logging early
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+# Configure logging early - check for stdio mode to avoid polluting stdout
+import sys
+if "--transport" in sys.argv and "stdio" in sys.argv:
+    logging.basicConfig(level=logging.CRITICAL)
+else:
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
 logger = logging.getLogger(__name__)
 
 
@@ -1320,31 +1326,45 @@ async def prompt_from_image(
 # =============================================================================
 
 if __name__ == "__main__":
-    # Get port from environment (Railway sets this automatically)
-    port = int(os.getenv("PORT", 8000))
-    host = os.getenv("HOST", "0.0.0.0")
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description="Image Tool MCP Server")
+    parser.add_argument("--transport", default="http", choices=["http", "stdio"], 
+                       help="Transport method (http or stdio)")
+    parser.add_argument("--host", default=os.getenv("HOST", "0.0.0.0"),
+                       help="Host to bind to (http mode only)")
+    parser.add_argument("--port", type=int, default=int(os.getenv("PORT", 8000)),
+                       help="Port to bind to (http mode only)")
     
-    logger.info("=" * 50)
-    logger.info("STARTING IMAGE TOOL MCP SERVER")
-    logger.info("=" * 50)
-    logger.info(f"Server configuration:")
-    logger.info(f"  Host: {host}")
-    logger.info(f"  Port: {port}")
-    logger.info(f"  OpenAI configured: {_global_app_context.openai_client is not None if _global_app_context else 'Context not initialized'}")
-    logger.info(f"  Temp directory: {_global_app_context.temp_dir if _global_app_context else 'Not set'}")
-    logger.info("Available endpoints:")
-    logger.info(f"  Health check: http://{host}:{port}/health")
-    logger.info(f"  Root: http://{host}:{port}/")
-    logger.info(f"  MCP: http://{host}:{port}/mcp/")
-    logger.info("=" * 50)
+    args = parser.parse_args()
     
-    try:
-        # Force startup with minimal configuration
-        logger.info("Attempting to start FastMCP server...")
-        mcp.run(transport="http", host=host, port=port)
-    except Exception as e:
-        logger.error(f"CRITICAL ERROR - Failed to start server: {e}")
-        logger.error(f"Error type: {type(e).__name__}")
-        import traceback
-        logger.error(f"Traceback: {traceback.format_exc()}")
-        raise
+    if args.transport == "stdio":
+        # In stdio mode, disable all logging to avoid polluting stdout for JSON-RPC
+        logging.getLogger().setLevel(logging.CRITICAL)
+        logging.getLogger("__main__").setLevel(logging.CRITICAL)
+        logging.getLogger("fastmcp").setLevel(logging.CRITICAL)
+        mcp.run(transport="stdio")
+    else:
+        # HTTP mode - show configuration
+        logger.info("=" * 50)
+        logger.info("STARTING IMAGE TOOL MCP SERVER")
+        logger.info("=" * 50)
+        logger.info(f"Server configuration:")
+        logger.info(f"  Host: {args.host}")
+        logger.info(f"  Port: {args.port}")
+        logger.info(f"  OpenAI configured: {_global_app_context.openai_client is not None if _global_app_context else 'Context not initialized'}")
+        logger.info(f"  Temp directory: {_global_app_context.temp_dir if _global_app_context else 'Not set'}")
+        logger.info("Available endpoints:")
+        logger.info(f"  Health check: http://{args.host}:{args.port}/health")
+        logger.info(f"  Root: http://{args.host}:{args.port}/")
+        logger.info(f"  MCP: http://{args.host}:{args.port}/mcp/")
+        logger.info("=" * 50)
+        
+        try:
+            logger.info("Attempting to start FastMCP server...")
+            mcp.run(transport="http", host=args.host, port=args.port)
+        except Exception as e:
+            logger.error(f"CRITICAL ERROR - Failed to start server: {e}")
+            logger.error(f"Error type: {type(e).__name__}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            raise
