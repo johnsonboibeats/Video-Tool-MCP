@@ -184,7 +184,7 @@ except Exception as e:
     )
 
 # Railway security configuration
-ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "https://claude.ai,https://web.claude.ai").split(",")
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "https://claude.ai,https://web.claude.ai,https://*.claude.ai").split(",")
 MAX_REQUESTS_PER_MINUTE = int(os.getenv("MAX_REQUESTS_PER_MINUTE", "100"))
 
 logger.info(f"CORS allowed origins: {ALLOWED_ORIGINS}")
@@ -291,6 +291,70 @@ async def root_endpoint(request: Request):
         "health_check": "/health",
         "mcp_endpoint": "/mcp/"
     })
+
+@mcp.custom_route("/.well-known/oauth-authorization-server", methods=["GET"])
+async def oauth_authorization_server(request: Request):
+    """OAuth 2.0 Authorization Server Metadata for Claude Web"""
+    return JSONResponse({
+        "issuer": str(request.base_url).rstrip('/'),
+        "authorization_endpoint": f"{str(request.base_url).rstrip('/')}/oauth/authorize",
+        "token_endpoint": f"{str(request.base_url).rstrip('/')}/oauth/token",
+        "userinfo_endpoint": f"{str(request.base_url).rstrip('/')}/oauth/userinfo",
+        "introspection_endpoint": f"{str(request.base_url).rstrip('/')}/oauth/introspect",
+        "revocation_endpoint": f"{str(request.base_url).rstrip('/')}/oauth/revoke",
+        "registration_endpoint": f"{str(request.base_url).rstrip('/')}/register",
+        "jwks_uri": f"{str(request.base_url).rstrip('/')}/.well-known/jwks.json",
+        "response_types_supported": ["code", "token"],
+        "grant_types_supported": ["authorization_code", "client_credentials"],
+        "token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post"],
+        "scopes_supported": ["mcp"]
+    })
+
+@mcp.custom_route("/.well-known/oauth-protected-resource", methods=["GET"])
+async def oauth_protected_resource(request: Request):
+    """OAuth 2.0 Protected Resource Metadata for Claude Web"""
+    return JSONResponse({
+        "resource": str(request.base_url).rstrip('/'),
+        "authorization_servers": [str(request.base_url).rstrip('/')],
+        "scopes_supported": ["mcp"],
+        "bearer_methods_supported": ["header", "query"],
+        "resource_documentation": f"{str(request.base_url).rstrip('/')}/docs"
+    })
+
+@mcp.custom_route("/register", methods=["POST"])
+async def client_registration(request: Request):
+    """OAuth 2.0 Dynamic Client Registration for Claude Web"""
+    # For simplicity, return a mock client registration response
+    # In production, you'd validate and store client details
+    return JSONResponse({
+        "client_id": "claude-web-client",
+        "client_secret": "mock-secret-for-development",
+        "client_name": "Claude Web",
+        "redirect_uris": ["https://claude.ai", "https://web.claude.ai"],
+        "scope": "mcp",
+        "token_endpoint_auth_method": "client_secret_basic"
+    })
+
+@mcp.custom_route("/.well-known/jwks.json", methods=["GET"])
+async def jwks_endpoint(request: Request):
+    """JSON Web Key Set endpoint (mock for development)"""
+    return JSONResponse({
+        "keys": [
+            {
+                "kty": "RSA",
+                "use": "sig",
+                "kid": "mock-key-id",
+                "n": "mock-modulus",
+                "e": "AQAB"
+            }
+        ]
+    })
+
+@mcp.custom_route("/mcp", methods=["GET", "POST", "HEAD"])
+async def mcp_redirect(request: Request):
+    """Redirect /mcp to /mcp/ to handle URL variations"""
+    from starlette.responses import RedirectResponse
+    return RedirectResponse(url="/mcp/", status_code=307)
 
 # =============================================================================
 # UTILITY FUNCTIONS
@@ -1337,7 +1401,7 @@ if __name__ == "__main__":
                        help="Transport method (http or stdio)")
     parser.add_argument("--host", default=os.getenv("HOST", "0.0.0.0"),
                        help="Host to bind to (http mode only)")
-    parser.add_argument("--port", type=int, default=int(os.getenv("PORT", 8000)),
+    parser.add_argument("--port", type=int, default=int(os.getenv("PORT", 8080)),
                        help="Port to bind to (http mode only)")
     
     args = parser.parse_args()
