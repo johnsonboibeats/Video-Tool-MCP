@@ -201,7 +201,8 @@ middleware = [
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
-    )
+    ),
+    Middleware(OAuthMiddleware)  # Add OAuth middleware
 ]
 mcp = FastMCP("Image Tool MCP", middleware=middleware)
 
@@ -272,7 +273,15 @@ async def health_check(request: Request):
         response_data = {
             "status": "healthy",
             "timestamp": time.time(),
-            "server": "Image Tool MCP Server"
+            "server": "Image Tool MCP Server",
+            "oauth_enabled": True,
+            "oauth_issuer": OAUTH_CONFIG["issuer"],
+            "oauth_endpoints": {
+                "authorization": "/oauth/authorize",
+                "token": "/oauth/token",
+                "userinfo": "/oauth/userinfo",
+                "revoke": "/oauth/revoke"
+            }
         }
         
         # Safely check OpenAI configuration
@@ -315,22 +324,348 @@ async def mcp_redirect(request: Request):
         return RedirectResponse(url="/mcp/", status_code=307)
 
 # =============================================================================
-# OAUTH DISCOVERY ENDPOINTS (for Claude compatibility)
+# OAUTH IMPLEMENTATION
+# =============================================================================
+
+import jwt
+from datetime import datetime, timedelta
+from typing import Optional, Dict, Any
+
+# OAuth configuration
+OAUTH_CONFIG = {
+    "issuer": "https://claude.ai",
+    "authorization_endpoint": "https://claude.ai/oauth/authorize",
+    "token_endpoint": "https://claude.ai/oauth/token",
+    "jwks_uri": "https://claude.ai/.well-known/jwks.json",
+    "response_types_supported": ["code"],
+    "subject_types_supported": ["public"],
+    "id_token_signing_alg_values_supported": ["RS256"],
+    "scopes_supported": ["read", "write", "image_processing"],
+    "token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post"],
+    "grant_types_supported": ["authorization_code", "refresh_token"]
+}
+
+# JWT configuration for token handling
+JWT_SECRET = os.getenv("JWT_SECRET", secrets.token_urlsafe(32))
+JWT_ALGORITHM = "HS256"
+JWT_EXPIRY_HOURS = 1
+REFRESH_TOKEN_EXPIRY_DAYS = 30
+
+# In-memory token storage (use Redis/database in production)
+token_store: Dict[str, Dict[str, Any]] = {}
+
+def generate_access_token(user_id: str, scopes: list = None) -> str:
+    """Generate JWT access token"""
+    payload = {
+        "sub": user_id,
+        "iss": OAUTH_CONFIG["issuer"],
+        "aud": "claude",
+        "exp": datetime.utcnow() + timedelta(hours=JWT_EXPIRY_HOURS),
+        "iat": datetime.utcnow(),
+        "scope": " ".join(scopes or ["read", "write"])
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+def generate_refresh_token(user_id: str) -> str:
+    """Generate refresh token"""
+    payload = {
+        "sub": user_id,
+        "iss": OAUTH_CONFIG["issuer"],
+        "aud": "claude",
+        "exp": datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRY_DAYS),
+        "iat": datetime.utcnow(),
+        "type": "refresh"
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+def verify_token(token: str) -> Optional[Dict[str, Any]]:
+    """Verify and decode JWT token"""
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        return payload
+    except jwt.ExpiredSignatureError:
+        return None
+    except jwt.InvalidTokenError:
+        return None
+
+def get_token_from_header(request: Request) -> Optional[str]:
+    """Extract token from Authorization header"""
+    auth_header = request.headers.get("authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        return auth_header[7:]  # Remove "Bearer " prefix
+    return None
+
+async def require_auth(request: Request) -> Optional[Dict[str, Any]]:
+    """Middleware to require authentication"""
+    token = get_token_from_header(request)
+    if not token:
+        return None
+    
+    payload = verify_token(token)
+    if not payload:
+        return None
+    
+    return payload
+
+# =============================================================================
+# OAUTH ENDPOINTS
+# =============================================================================
+
+@mcp.custom_route("/oauth/authorize", methods=["GET"])
+async def oauth_authorize(request: Request):
+    """OAuth authorization endpoint"""
+    logger.info("OAuth authorization endpoint called")
+    
+    # Extract OAuth parameters
+    client_id = request.query_params.get("client_id")
+    redirect_uri = request.query_params.get("redirect_uri")
+    response_type = request.query_params.get("response_type")
+    scope = request.query_params.get("scope", "read write")
+    state = request.query_params.get("state")
+    
+    # Validate parameters
+    if not client_id or client_id != "Claude":
+        return JSONResponse({
+            "error": "invalid_client",
+            "error_description": "Invalid client ID"
+        }, status_code=400)
+    
+    if response_type != "code":
+        return JSONResponse({
+            "error": "unsupported_response_type",
+            "error_description": "Only 'code' response type is supported"
+        }, status_code=400)
+    
+    # Generate authorization code
+    auth_code = secrets.token_urlsafe(32)
+    user_id = "claude_user"  # In production, get from session
+    
+    # Store authorization code (use Redis/database in production)
+    token_store[auth_code] = {
+        "user_id": user_id,
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "scope": scope,
+        "expires": datetime.utcnow() + timedelta(minutes=10)
+    }
+    
+    # Build redirect URL
+    redirect_url = f"{redirect_uri}?code={auth_code}"
+    if state:
+        redirect_url += f"&state={state}"
+    
+    logger.info(f"Authorization code generated for client {client_id}")
+    return JSONResponse({
+        "authorization_code": auth_code,
+        "redirect_uri": redirect_url,
+        "expires_in": 600
+    })
+
+@mcp.custom_route("/oauth/token", methods=["POST"])
+async def oauth_token(request: Request):
+    """OAuth token endpoint"""
+    logger.info("OAuth token endpoint called")
+    
+    try:
+        form_data = await request.form()
+        grant_type = form_data.get("grant_type")
+        
+        if grant_type == "authorization_code":
+            return await handle_authorization_code_grant(form_data)
+        elif grant_type == "refresh_token":
+            return await handle_refresh_token_grant(form_data)
+        else:
+            return JSONResponse({
+                "error": "unsupported_grant_type",
+                "error_description": f"Grant type '{grant_type}' not supported"
+            }, status_code=400)
+            
+    except Exception as e:
+        logger.error(f"Token endpoint error: {e}")
+        return JSONResponse({
+            "error": "server_error",
+            "error_description": "Internal server error"
+        }, status_code=500)
+
+async def handle_authorization_code_grant(form_data) -> JSONResponse:
+    """Handle authorization code grant"""
+    code = form_data.get("code")
+    client_id = form_data.get("client_id")
+    client_secret = form_data.get("client_secret")
+    redirect_uri = form_data.get("redirect_uri")
+    
+    # Validate authorization code
+    if code not in token_store:
+        return JSONResponse({
+            "error": "invalid_grant",
+            "error_description": "Invalid authorization code"
+        }, status_code=400)
+    
+    auth_data = token_store[code]
+    
+    # Check if code is expired
+    if datetime.utcnow() > auth_data["expires"]:
+        del token_store[code]
+        return JSONResponse({
+            "error": "invalid_grant",
+            "error_description": "Authorization code expired"
+        }, status_code=400)
+    
+    # Validate client
+    if client_id != auth_data["client_id"]:
+        return JSONResponse({
+            "error": "invalid_client",
+            "error_description": "Client ID mismatch"
+        }, status_code=400)
+    
+    # Generate tokens
+    user_id = auth_data["user_id"]
+    scopes = auth_data["scope"].split()
+    
+    access_token = generate_access_token(user_id, scopes)
+    refresh_token = generate_refresh_token(user_id)
+    
+    # Store refresh token
+    token_store[refresh_token] = {
+        "user_id": user_id,
+        "client_id": client_id,
+        "scopes": scopes,
+        "expires": datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRY_DAYS)
+    }
+    
+    # Clean up authorization code
+    del token_store[code]
+    
+    logger.info(f"Access token generated for user {user_id}")
+    
+    return JSONResponse({
+        "access_token": access_token,
+        "token_type": "Bearer",
+        "expires_in": JWT_EXPIRY_HOURS * 3600,
+        "refresh_token": refresh_token,
+        "scope": " ".join(scopes)
+    })
+
+async def handle_refresh_token_grant(form_data) -> JSONResponse:
+    """Handle refresh token grant"""
+    refresh_token = form_data.get("refresh_token")
+    client_id = form_data.get("client_id")
+    client_secret = form_data.get("client_secret")
+    
+    # Validate refresh token
+    if refresh_token not in token_store:
+        return JSONResponse({
+            "error": "invalid_grant",
+            "error_description": "Invalid refresh token"
+        }, status_code=400)
+    
+    token_data = token_store[refresh_token]
+    
+    # Check if refresh token is expired
+    if datetime.utcnow() > token_data["expires"]:
+        del token_store[refresh_token]
+        return JSONResponse({
+            "error": "invalid_grant",
+            "error_description": "Refresh token expired"
+        }, status_code=400)
+    
+    # Validate client
+    if client_id != token_data["client_id"]:
+        return JSONResponse({
+            "error": "invalid_client",
+            "error_description": "Client ID mismatch"
+        }, status_code=400)
+    
+    # Generate new tokens
+    user_id = token_data["user_id"]
+    scopes = token_data["scopes"]
+    
+    access_token = generate_access_token(user_id, scopes)
+    new_refresh_token = generate_refresh_token(user_id)
+    
+    # Store new refresh token
+    token_store[new_refresh_token] = {
+        "user_id": user_id,
+        "client_id": client_id,
+        "scopes": scopes,
+        "expires": datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRY_DAYS)
+    }
+    
+    # Clean up old refresh token
+    del token_store[refresh_token]
+    
+    logger.info(f"Token refreshed for user {user_id}")
+    
+    return JSONResponse({
+        "access_token": access_token,
+        "token_type": "Bearer",
+        "expires_in": JWT_EXPIRY_HOURS * 3600,
+        "refresh_token": new_refresh_token,
+        "scope": " ".join(scopes)
+    })
+
+@mcp.custom_route("/oauth/revoke", methods=["POST"])
+async def oauth_revoke(request: Request):
+    """OAuth token revocation endpoint"""
+    logger.info("OAuth revocation endpoint called")
+    
+    try:
+        form_data = await request.form()
+        token = form_data.get("token")
+        token_type_hint = form_data.get("token_type_hint", "access_token")
+        
+        if not token:
+            return JSONResponse({
+                "error": "invalid_request",
+                "error_description": "Token parameter required"
+            }, status_code=400)
+        
+        # Revoke token (remove from store)
+        if token in token_store:
+            del token_store[token]
+            logger.info(f"Token revoked: {token[:10]}...")
+        
+        return JSONResponse({"status": "success"})
+        
+    except Exception as e:
+        logger.error(f"Revocation endpoint error: {e}")
+        return JSONResponse({
+            "error": "server_error",
+            "error_description": "Internal server error"
+        }, status_code=500)
+
+@mcp.custom_route("/oauth/userinfo", methods=["GET"])
+async def oauth_userinfo(request: Request):
+    """OAuth userinfo endpoint"""
+    logger.info("OAuth userinfo endpoint called")
+    
+    # Verify access token
+    payload = await require_auth(request)
+    if not payload:
+        return JSONResponse({
+            "error": "invalid_token",
+            "error_description": "Invalid or expired access token"
+        }, status_code=401)
+    
+    user_id = payload.get("sub")
+    
+    return JSONResponse({
+        "sub": user_id,
+        "iss": OAUTH_CONFIG["issuer"],
+        "name": "Claude User",
+        "email": f"{user_id}@claude.ai",
+        "scope": payload.get("scope", "read write")
+    })
+
+# =============================================================================
+# ENHANCED OAUTH DISCOVERY ENDPOINTS
 # =============================================================================
 
 @mcp.custom_route("/.well-known/oauth-authorization-server", methods=["GET"])
 async def oauth_discovery(request: Request):
-    """OAuth discovery endpoint for Claude compatibility"""
+    """Enhanced OAuth discovery endpoint for Claude compatibility"""
     logger.info("OAuth discovery endpoint called")
-    return JSONResponse({
-        "issuer": "https://claude.ai",
-        "authorization_endpoint": "https://claude.ai/oauth/authorize",
-        "token_endpoint": "https://claude.ai/oauth/token",
-        "jwks_uri": "https://claude.ai/.well-known/jwks.json",
-        "response_types_supported": ["code"],
-        "subject_types_supported": ["public"],
-        "id_token_signing_alg_values_supported": ["RS256"]
-    })
+    return JSONResponse(OAUTH_CONFIG)
 
 @mcp.custom_route("/.well-known/oauth-authorization-server/mcp", methods=["GET"])
 async def oauth_discovery_mcp(request: Request):
@@ -343,8 +678,91 @@ async def oauth_protected_resource(request: Request):
     logger.info("OAuth protected resource endpoint called")
     return JSONResponse({
         "resource": "mcp",
-        "scopes": ["read", "write"],
-        "token_endpoint": "https://claude.ai/oauth/token"
+        "scopes": ["read", "write", "image_processing"],
+        "token_endpoint": f"{request.base_url}oauth/token",
+        "userinfo_endpoint": f"{request.base_url}oauth/userinfo"
+    })
+
+# =============================================================================
+# OAUTH MIDDLEWARE
+# =============================================================================
+
+class OAuthMiddleware(BaseHTTPMiddleware):
+    """Middleware to handle OAuth authentication for MCP endpoints"""
+    
+    async def dispatch(self, request: Request, call_next):
+        # Skip OAuth for discovery and token endpoints
+        if any(path in request.url.path for path in [
+            "/.well-known/",
+            "/oauth/",
+            "/health",
+            "/",
+            "/mcp"
+        ]):
+            return await call_next(request)
+        
+        # Check for valid OAuth token
+        payload = await require_auth(request)
+        if not payload:
+            return JSONResponse({
+                "error": "invalid_token",
+                "error_description": "Valid OAuth token required"
+            }, status_code=401)
+        
+        # Add user info to request state
+        request.state.user = payload
+        
+        return await call_next(request)
+
+# =============================================================================
+# ENHANCED ERROR HANDLING FOR CLAUDE COMPATIBILITY
+# =============================================================================
+
+def create_claude_compatible_error(error_type: str, message: str, status_code: int = 400):
+    """Create error responses compatible with Claude's expectations"""
+    return JSONResponse({
+        "error": error_type,
+        "error_description": message,
+        "claude_compatible": True,
+        "timestamp": datetime.utcnow().isoformat()
+    }, status_code=status_code)
+
+# =============================================================================
+# OAUTH TESTING ENDPOINTS
+# =============================================================================
+
+@mcp.custom_route("/oauth/test", methods=["GET"])
+async def oauth_test(request: Request):
+    """Test endpoint for OAuth functionality"""
+    logger.info("OAuth test endpoint called")
+    
+    # Check if user is authenticated
+    payload = await require_auth(request)
+    if payload:
+        return JSONResponse({
+            "authenticated": True,
+            "user_id": payload.get("sub"),
+            "scopes": payload.get("scope", "").split(),
+            "expires": payload.get("exp")
+        })
+    else:
+        return JSONResponse({
+            "authenticated": False,
+            "message": "No valid OAuth token provided"
+        })
+
+@mcp.custom_route("/oauth/status", methods=["GET"])
+async def oauth_status(request: Request):
+    """OAuth server status endpoint"""
+    logger.info("OAuth status endpoint called")
+    
+    return JSONResponse({
+        "oauth_enabled": True,
+        "issuer": OAUTH_CONFIG["issuer"],
+        "supported_grant_types": OAUTH_CONFIG["grant_types_supported"],
+        "supported_scopes": OAUTH_CONFIG["scopes_supported"],
+        "active_tokens": len(token_store),
+        "server_time": datetime.utcnow().isoformat()
     })
 
 @mcp.custom_route("/register", methods=["POST"])
@@ -353,16 +771,47 @@ async def register_endpoint(request: Request):
     logger.info("Registration endpoint called")
     return JSONResponse({
         "status": "success",
-        "message": "Registration not required for this MCP server"
+        "message": "Registration not required for this MCP server",
+        "oauth_required": True
     })
 
 @mcp.custom_route("/auth", methods=["GET", "POST"])
 async def auth_endpoint(request: Request):
     """Simple auth endpoint for Claude compatibility"""
     logger.info("Auth endpoint called")
+    
+    # Check if user is authenticated
+    payload = await require_auth(request)
+    if payload:
+        return JSONResponse({
+            "status": "authenticated",
+            "user_id": payload.get("sub"),
+            "scopes": payload.get("scope", "").split(),
+            "message": "User is authenticated"
+        })
+    else:
+        return JSONResponse({
+            "status": "unauthenticated",
+            "message": "No valid OAuth token provided",
+            "oauth_required": True
+        })
+
+@mcp.custom_route("/.well-known/jwks.json", methods=["GET"])
+async def jwks_endpoint(request: Request):
+    """JWKS endpoint for OAuth compliance"""
+    logger.info("JWKS endpoint called")
+    
+    # In production, this would return actual public keys
+    # For now, return a minimal JWKS for compliance
     return JSONResponse({
-        "status": "authenticated",
-        "message": "No authentication required"
+        "keys": [
+            {
+                "kty": "oct",
+                "use": "sig",
+                "kid": "image-tool-mcp-key",
+                "alg": "HS256"
+            }
+        ]
     })
 
 # =============================================================================

@@ -19,11 +19,13 @@ classifiers = [
 ]
 requires-python = ">=3.13"
 dependencies = [
-    "fastmcp>=0.4.0",
+    "fastmcp>=2.8.0",
     "openai>=1.100.0",
     "pillow>=11.3.0",
     "httpx>=0.28.1",
     "python-dotenv>=1.1.1",
+    "aiofiles>=24.1.0",
+    "uvicorn>=0.34.0",
 ]
 
 [project.optional-dependencies]
