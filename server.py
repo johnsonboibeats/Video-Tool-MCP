@@ -191,23 +191,24 @@ logger.info(f"CORS allowed origins: {ALLOWED_ORIGINS}")
 logger.info(f"Rate limit: {MAX_REQUESTS_PER_MINUTE} requests per minute")
 
 # Create FastMCP server
-mcp = FastMCP("Image Tool MCP")
+from starlette.middleware import Middleware
+from starlette.middleware.cors import CORSMiddleware
+
+middleware = [
+    Middleware(
+        CORSMiddleware,
+        allow_origins=ALLOWED_ORIGINS,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+]
+mcp = FastMCP("Image Tool MCP", middleware=middleware)
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.middleware.cors import CORSMiddleware
-# Removed CORS middleware for simplified Railway deployment
 from collections import defaultdict
-
-# Add CORS middleware to handle requests from Claude's web interface
-mcp.add_middleware(
-    CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 # =============================================================================
 # SECURITY MIDDLEWARE
