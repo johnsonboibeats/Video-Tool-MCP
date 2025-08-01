@@ -24,14 +24,12 @@ import string
 import sys
 import tempfile
 import time
-from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Union
 from pydantic import BaseModel, ConfigDict
 
 
 # Configure logging early - in stdio mode, log to stderr to avoid polluting stdout
-import sys
 if "--transport" in sys.argv and "stdio" in sys.argv:
     # In stdio mode, log to stderr so it doesn't interfere with JSON-RPC on stdout
     logging.basicConfig(
@@ -60,7 +58,7 @@ except Exception as e:
 
 # Image processing imports with graceful fallbacks
 try:
-    from PIL import Image as PILImage, ImageOps
+    from PIL import Image as PILImage, ImageOps, ImageFilter, ImageEnhance, ExifTags
     PIL_AVAILABLE = True
 except ImportError:
     PIL_AVAILABLE = False
@@ -193,16 +191,13 @@ logger.info(f"CORS allowed origins: {ALLOWED_ORIGINS}")
 logger.info(f"Rate limit: {MAX_REQUESTS_PER_MINUTE} requests per minute")
 
 # Create FastMCP server
-from starlette.middleware import Middleware
-from starlette.middleware.cors import CORSMiddleware
-
-# Initialize FastMCP server
-mcp = FastMCP("Image Tool MCP")
-
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from collections import defaultdict
+
+# Initialize FastMCP server
+mcp = FastMCP("Image Tool MCP")
 
 # =============================================================================
 # SECURITY MIDDLEWARE
@@ -280,7 +275,7 @@ async def health_check(request: Request):
         # Safely check OpenAI configuration
         try:
             response_data["openai_configured"] = _global_app_context.openai_client is not None if _global_app_context else False
-        except:
+        except Exception:
             response_data["openai_configured"] = False
             
         logger.info(f"Health check response: {response_data}")
@@ -313,7 +308,6 @@ async def mcp_redirect(request: Request):
         return RedirectResponse(url="/mcp/", status_code=307)
     else:
         # Redirect GET requests to /mcp/
-        from starlette.responses import RedirectResponse
         return RedirectResponse(url="/mcp/", status_code=307)
 
 # =============================================================================
@@ -322,7 +316,7 @@ async def mcp_redirect(request: Request):
 
 import jwt
 from datetime import datetime, timedelta
-from typing import Optional, Dict, Any
+
 
 # OAuth configuration
 OAUTH_CONFIG = {
@@ -1602,20 +1596,16 @@ async def transform_image(
                 img = ImageOps.grayscale(img)
                 
             elif operation == "blur":
-                from PIL import ImageFilter
                 img = img.filter(ImageFilter.BLUR)
                 
             elif operation == "sharpen":
-                from PIL import ImageFilter
                 img = img.filter(ImageFilter.SHARPEN)
                 
             elif operation == "contrast" and value:
-                from PIL import ImageEnhance
                 enhancer = ImageEnhance.Contrast(img)
                 img = enhancer.enhance(value)
                 
             elif operation == "brightness" and value:
-                from PIL import ImageEnhance
                 enhancer = ImageEnhance.Brightness(img)
                 img = enhancer.enhance(value)
             
@@ -1748,7 +1738,6 @@ async def image_metadata(
             
             # Try to get EXIF data
             try:
-                from PIL import ExifTags
                 exif = img._getexif()
                 if exif:
                     exif_data = {}
@@ -1756,7 +1745,7 @@ async def image_metadata(
                         tag = ExifTags.TAGS.get(tag_id, tag_id)
                         exif_data[tag] = str(value)
                     metadata["exif"] = exif_data
-            except:
+            except Exception:
                 metadata["exif"] = "No EXIF data found"
             
             return metadata

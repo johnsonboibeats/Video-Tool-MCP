@@ -1,9 +1,9 @@
-fastmcp>=2.8.0
-uvicorn
-openai>=1.97.0
+fastmcp>=2.10.6
+uvicorn>=0.35.0
+openai>=1.98.0
 pillow>=11.3.0
 httpx>=0.28.1
 python-dotenv>=1.1.1
 aiofiles>=24.1.0
-pydantic>=2.0.0
-PyJWT>=2.8.0
+pydantic>=2.11.7
+PyJWT>=2.10.1

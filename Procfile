@@ -1,1 +1,1 @@
-web: python server_claude_web.py --transport sse --port $PORT
+web: python server.py --transport streamable-http --port $PORT

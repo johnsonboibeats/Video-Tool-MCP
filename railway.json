@@ -6,10 +6,6 @@
       "value": "",
       "isSensitive": true
     },
-    "PORT": {
-      "value": "8080",
-      "isOptional": true
-    },
     "ALLOWED_ORIGINS": {
       "value": "https://claude.ai,https://web.claude.ai,https://*.claude.ai",
       "isOptional": true
