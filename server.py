@@ -251,13 +251,7 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         
         return await call_next(request)
 
-# Add basic middleware for Railway deployment (HTTP mode only)
-if "--transport" not in sys.argv or "stdio" not in sys.argv:
-    mcp.add_middleware(RateLimitMiddleware)
-    mcp.add_middleware(RequestLoggingMiddleware)
-    logger.info("Security middleware configured")
-    logger.info("FastMCP server instance created and configured")
-    logger.info("Custom routes registered: /health, /")
+# Simplified initialization - no middleware for better Claude Web compatibility
 
 @mcp.custom_route("/health", methods=["GET"])
 async def health_check(request: Request):
@@ -292,69 +286,7 @@ async def root_endpoint(request: Request):
         "mcp_endpoint": "/mcp/"
     })
 
-@mcp.custom_route("/.well-known/oauth-authorization-server", methods=["GET"])
-async def oauth_authorization_server(request: Request):
-    """OAuth 2.0 Authorization Server Metadata for Claude Web"""
-    return JSONResponse({
-        "issuer": str(request.base_url).rstrip('/'),
-        "authorization_endpoint": f"{str(request.base_url).rstrip('/')}/oauth/authorize",
-        "token_endpoint": f"{str(request.base_url).rstrip('/')}/oauth/token",
-        "userinfo_endpoint": f"{str(request.base_url).rstrip('/')}/oauth/userinfo",
-        "introspection_endpoint": f"{str(request.base_url).rstrip('/')}/oauth/introspect",
-        "revocation_endpoint": f"{str(request.base_url).rstrip('/')}/oauth/revoke",
-        "registration_endpoint": f"{str(request.base_url).rstrip('/')}/register",
-        "jwks_uri": f"{str(request.base_url).rstrip('/')}/.well-known/jwks.json",
-        "response_types_supported": ["code", "token"],
-        "grant_types_supported": ["authorization_code", "client_credentials"],
-        "token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post"],
-        "scopes_supported": ["mcp"]
-    })
-
-@mcp.custom_route("/.well-known/oauth-protected-resource", methods=["GET"])
-async def oauth_protected_resource(request: Request):
-    """OAuth 2.0 Protected Resource Metadata for Claude Web"""
-    return JSONResponse({
-        "resource": str(request.base_url).rstrip('/'),
-        "authorization_servers": [str(request.base_url).rstrip('/')],
-        "scopes_supported": ["mcp"],
-        "bearer_methods_supported": ["header", "query"],
-        "resource_documentation": f"{str(request.base_url).rstrip('/')}/docs"
-    })
-
-@mcp.custom_route("/register", methods=["POST"])
-async def client_registration(request: Request):
-    """OAuth 2.0 Dynamic Client Registration for Claude Web"""
-    # For simplicity, return a mock client registration response
-    # In production, you'd validate and store client details
-    return JSONResponse({
-        "client_id": "claude-web-client",
-        "client_secret": "mock-secret-for-development",
-        "client_name": "Claude Web",
-        "redirect_uris": ["https://claude.ai", "https://web.claude.ai"],
-        "scope": "mcp",
-        "token_endpoint_auth_method": "client_secret_basic"
-    })
-
-@mcp.custom_route("/.well-known/jwks.json", methods=["GET"])
-async def jwks_endpoint(request: Request):
-    """JSON Web Key Set endpoint (mock for development)"""
-    return JSONResponse({
-        "keys": [
-            {
-                "kty": "RSA",
-                "use": "sig",
-                "kid": "mock-key-id",
-                "n": "mock-modulus",
-                "e": "AQAB"
-            }
-        ]
-    })
-
-@mcp.custom_route("/mcp", methods=["GET", "POST", "HEAD"])
-async def mcp_redirect(request: Request):
-    """Redirect /mcp to /mcp/ to handle URL variations"""
-    from starlette.responses import RedirectResponse
-    return RedirectResponse(url="/mcp/", status_code=307)
+# Removed OAuth endpoints - Claude Web doesn't need them, simple FastMCP works better
 
 # =============================================================================
 # UTILITY FUNCTIONS

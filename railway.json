@@ -28,7 +28,7 @@
     "builder": "NIXPACKS"
   },
   "deploy": {
-    "startCommand": "python server.py",
+    "startCommand": "python server.py --transport http --host 0.0.0.0 --port $PORT",
     "healthcheckPath": "/health",
     "healthcheckTimeout": 300
   }
