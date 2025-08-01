@@ -185,6 +185,8 @@ except Exception as e:
 
 # Railway security configuration
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "https://claude.ai,https://web.claude.ai,https://*.claude.ai").split(",")
+# Clean up any extra whitespace or semicolons
+ALLOWED_ORIGINS = [origin.strip().rstrip(';') for origin in ALLOWED_ORIGINS]
 MAX_REQUESTS_PER_MINUTE = int(os.getenv("MAX_REQUESTS_PER_MINUTE", "100"))
 
 logger.info(f"CORS allowed origins: {ALLOWED_ORIGINS}")
@@ -194,17 +196,8 @@ logger.info(f"Rate limit: {MAX_REQUESTS_PER_MINUTE} requests per minute")
 from starlette.middleware import Middleware
 from starlette.middleware.cors import CORSMiddleware
 
-middleware = [
-    Middleware(
-        CORSMiddleware,
-        allow_origins=ALLOWED_ORIGINS,
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    ),
-    Middleware(OAuthMiddleware)  # Add OAuth middleware
-]
-mcp = FastMCP("Image Tool MCP", middleware=middleware)
+# Initialize FastMCP without OAuth middleware first
+mcp = FastMCP("Image Tool MCP")
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -713,6 +706,42 @@ class OAuthMiddleware(BaseHTTPMiddleware):
         request.state.user = payload
         
         return await call_next(request)
+
+# =============================================================================
+# MIDDLEWARE CONFIGURATION
+# =============================================================================
+
+# Apply CORS middleware to FastMCP
+mcp.add_middleware(CORSMiddleware, 
+                   allow_origins=ALLOWED_ORIGINS,
+                   allow_credentials=True,
+                   allow_methods=["*"],
+                   allow_headers=["*"])
+
+# Note: OAuth protection is implemented directly in routes that need it
+# rather than using global middleware to avoid conflicts with MCP protocol
+
+def require_oauth_auth(func):
+    """Decorator to require OAuth authentication for specific routes"""
+    async def wrapper(request: Request, *args, **kwargs):
+        # Skip OAuth for MCP protocol endpoints
+        if request.url.path.startswith("/mcp/"):
+            return await func(request, *args, **kwargs)
+        
+        # Check for valid OAuth token
+        payload = await require_auth(request)
+        if not payload:
+            return JSONResponse({
+                "error": "invalid_token",
+                "error_description": "Valid OAuth token required"
+            }, status_code=401)
+        
+        # Add user info to request state
+        request.state.user = payload
+        
+        return await func(request, *args, **kwargs)
+    
+    return wrapper
 
 # =============================================================================
 # ENHANCED ERROR HANDLING FOR CLAUDE COMPATIBILITY
