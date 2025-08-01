@@ -1,1 +1,1 @@
-web: python server_minimal.py --transport http --port $PORT
+web: python server_claude_web.py --transport sse --port $PORT
