@@ -6,11 +6,6 @@
       "value": "",
       "isSensitive": true
     },
-    "GOOGLE_SERVICE_ACCOUNT_JSON": {
-      "value": "",
-      "isSensitive": true,
-      "isOptional": true
-    },
     "PORT": {
       "value": "8080",
       "isOptional": true

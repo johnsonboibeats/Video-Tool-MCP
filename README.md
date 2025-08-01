@@ -1,203 +1,146 @@
 # Image Tool MCP Server
 
-A comprehensive Model Context Protocol (MCP) server for image processing tasks, deployed on Railway with OAuth authentication for Google Drive integration and Claude Desktop compatibility.
+A comprehensive Model Context Protocol (MCP) server for image processing tasks, deployed on Railway with Claude Desktop compatibility.
 
 ## Features
 
-- **Image Generation**: Generate images from text prompts using OpenAI's gpt-image-1
-- **Image Analysis**: Analyze images using OpenAI's Vision API for detailed descriptions and OCR
-- **Google Drive Integration**: Process files directly from Google Drive
-- **Multiple Formats**: Support for various image formats (PNG, JPG, WebP, etc.)
+- **Image Generation**: Create images from text prompts using OpenAI's gpt-image-1 model
+- **Image Analysis**: Analyze images with detailed descriptions using GPT-4o
+- **Image Editing**: Edit images with text prompts and optional masks
+- **Image Variations**: Generate variations of existing images
+- **Text Extraction**: Extract text from images using OCR
+- **Image Comparison**: Compare two images for similarities and differences
+- **Smart Editing**: Advanced editing with analysis and modification prompts
+- **Image Transformations**: Resize, rotate, flip, and apply filters
+- **Batch Processing**: Process multiple images with various operations
+- **Image Metadata**: Extract technical information from images
+- **Prompt Generation**: Generate optimized prompts from images
+- **Local File Support**: Process files from local file system
+- **Base64 Support**: Handle base64 encoded image data
 
 ## Environment Variables
 
 ### Required
-- `OPENAI_API_KEY`: OpenAI API key for image generation and analysis services
-
-### Google Drive (Choose One)
-- `GOOGLE_SERVICE_ACCOUNT_JSON`: Base64-encoded service account JSON (recommended for Railway)
-- `GOOGLE_SERVICE_ACCOUNT_FILE`: Path to service account JSON file
-- `GOOGLE_OAUTH_CREDENTIALS_FILE`: Path to OAuth credentials file
+- `OPENAI_API_KEY`: Your OpenAI API key for image generation and analysis
 
 ### Optional
-- `MCP_TRANSPORT`: Transport type (`http`, `stdio`, `sse`) - defaults to `http`
-- `HOST`: Server host - defaults to `0.0.0.0`
-- `PORT`: Server port - defaults to `8080`
-- `MCP_TEMP_DIR`: Temporary directory for file processing
-- `RAILWAY_PUBLIC_DOMAIN`: Auto-detected for Railway deployments
-- `ALLOWED_ORIGINS`: Comma-separated list of allowed CORS origins - defaults to `https://claude.ai,https://web.claude.ai`
-- `MAX_REQUESTS_PER_MINUTE`: Rate limit for API requests - defaults to `100`
+- `PORT`: Server port (default: 8080)
+- `ALLOWED_ORIGINS`: CORS allowed origins (default: claude.ai domains)
+- `MAX_REQUESTS_PER_MINUTE`: Rate limiting (default: 100)
 
-## Deployment
+## Local Development
 
-### Railway Deployment
-1. Connect your GitHub repository to Railway
-2. Set environment variables in Railway dashboard
-3. Server will auto-detect Railway environment
-4. Access at: `https://your-app.up.railway.app`
+### Prerequisites
+- Python 3.8+
+- OpenAI API key with image generation access
 
-### Local Development
+### Setup
+1. Clone the repository
+2. Install dependencies: `pip install -r requirements.txt`
+3. Set environment variables:
+   ```bash
+   export OPENAI_API_KEY="your-openai-api-key"
+   ```
+4. Run the server: `python server.py`
+
+## Railway Deployment
+
+### Environment Variables
+```json
+{
+  "OPENAI_API_KEY": "your-openai-api-key"
+}
+```
+
+### Deploy
 ```bash
-# Install dependencies
-pip install -r requirements.txt
-
-# Set environment variables
-export OPENAI_API_KEY="your-key-here"
-export GOOGLE_SERVICE_ACCOUNT_JSON="base64-encoded-json"
-
-# Run server
-python server.py
+railway up
 ```
 
-## Claude Desktop Integration
+## Usage Examples
 
-### Configuration
-Add to your Claude Desktop MCP settings:
-
+### Image Generation
 ```json
 {
-  "mcpServers": {
-    "image-tool": {
-      "command": "python",
-      "args": ["/path/to/server.py"],
-      "env": {
-        "OPENAI_API_KEY": "your-key-here",
-        "GOOGLE_SERVICE_ACCOUNT_JSON": "your-base64-json"
-      }
-    }
-  }
+  "prompt": "A serene mountain landscape at sunset",
+  "size": "1024x1024",
+  "output_format": "png"
 }
 ```
 
-### For Remote Server (Railway)
+### Image Analysis
 ```json
 {
-  "mcpServers": {
-    "image-tool": {
-      "url": "https://your-app.up.railway.app/mcp/"
-    }
-  }
+  "image": "/path/to/image.jpg",
+  "prompt": "Describe this image in detail"
 }
 ```
 
-**Claude Web Configuration:**
+### Image Editing
 ```json
 {
-  "type": "url",
-  "url": "https://your-app.up.railway.app/mcp/"
+  "image": "/path/to/image.jpg",
+  "prompt": "Add a red car to the scene",
+  "output_format": "png"
+}
+```
+
+### File Input Types
+
+The server supports the following input types:
+
+#### Local Files
+```json
+{
+  "image": "/absolute/path/to/image.jpg"
+}
+```
+
+#### Base64 Data
+```json
+{
+  "image": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA..."
 }
 ```
 
 ## API Endpoints
 
-### Core MCP
-- `GET /mcp/` - MCP protocol endpoint
-- `GET /health` - Health check and server status
-
-### OAuth 2.0 Discovery
-- `GET /.well-known/oauth-authorization-server` - OAuth server metadata
-- `GET /.well-known/oauth-protected-resource` - Resource server metadata
-- `GET /.well-known/jwks.json` - JSON Web Key Set
-
-### OAuth Flow
-- `GET/POST /oauth/authorize` - Authorization endpoint
-- `POST /oauth/token` - Token endpoint
-- `GET /oauth/userinfo` - User information
-- `POST /oauth/introspect` - Token introspection
-- `POST /oauth/revoke` - Token revocation
-- `POST /register` - Client registration
+- `GET /health` - Health check endpoint
+- `GET /` - Root endpoint with server info
+- `POST /mcp/` - MCP protocol endpoint
 
 ## Available Tools
 
-### 1. create-image
-Generate images from text prompts with full control over parameters.
-
-**Parameters:**
-- `prompt` (str): Text description (max 32000 chars)
-- `model` (str): "gpt-image-1" (default)
-- `size` (str): "1024x1024", "1536x1024", "1024x1536", "auto"
-- `quality` (str): "auto", "high", "medium", "low"
-- `background` (str): "auto", "transparent", "opaque"
-- `output_format` (str): "png", "jpeg", "webp"
-- `output_compression` (int): 0-100 (for webp/jpeg)
-- `n` (int): Number of images (1-10)
-- `output_mode` (str): "base64" or "file"
-- `file_path` (str): Output path (required if output_mode="file")
-
-### 2. analyze-image
-Comprehensive image analysis using Vision API.
-
-**Parameters:**
-- `image` (str): Image path or base64 string
-- `prompt` (str): Analysis prompt (default: detailed description)
-- `model` (str): Vision model ("gpt-4o", "gpt-4o-mini")
-- `max_tokens` (int): Response length limit
-- `detail` (str): "low", "high", "auto"
-
-## File Input Support
-
-### Local Files
-```
-"/path/to/image.png"
-"/path/to/image.jpg"
-```
-
-### Google Drive Files
-```
-"drive://1abc123def456"  # File ID format
-"https://drive.google.com/file/d/1abc123def456/view"  # Full URL
-```
-
-## Supported Image Formats
-
-**Input/Output:** PNG, JPG, JPEG, WebP, GIF
-
-## Security Features
-
-- **Input Validation**: Comprehensive validation for all parameters
-- **Path Traversal Protection**: Prevents directory traversal attacks
-- **CORS Configuration**: Restricts access to allowed origins (Claude Web by default)
-- **Rate Limiting**: Built-in protection against abuse (100 requests/minute by default)
-- **Request Logging**: Monitor access patterns and detect unusual activity
-- **Railway Domain Security**: Uses Railway's hard-to-guess domain format for security through obscurity
+1. **create_image** - Generate images from text prompts
+2. **analyze_image** - Analyze images with detailed descriptions
+3. **edit_image** - Edit images with text prompts
+4. **generate_variations** - Create variations of existing images
+5. **extract_text** - Extract text from images using OCR
+6. **compare_images** - Compare two images
+7. **smart_edit** - Advanced editing with analysis
+8. **transform_image** - Apply transformations (resize, rotate, etc.)
+9. **batch_process** - Process multiple images
+10. **image_metadata** - Extract image metadata
+11. **describe_and_recreate** - Describe and recreate images
+12. **prompt_from_image** - Generate prompts from images
 
 ## Error Handling
 
-- **Specific Error Types**: FileNotFoundError, PermissionError, ValidationError
-- **Detailed Logging**: Structured logging with correlation IDs
-- **Graceful Degradation**: Continues operation with reduced functionality
-- **User-Friendly Messages**: Clear error descriptions for common issues
+The server includes comprehensive error handling for:
+- Invalid file paths
+- Missing API keys
+- Rate limiting
+- Network timeouts
+- Invalid image formats
 
-## Monitoring & Health
+## Security Features
 
-### Health Check Response
-```json
-{
-  "status": "healthy",
-  "timestamp": 1703123456.789,
-  "version": "1.0.0",
-  "server": "Image Tool MCP Server",
-  "features": ["image_generation", "image_analysis", ...],
-  "file_support": {
-    "local_files": true,
-    "google_drive": true
-  },
-  "tools_count": 2
-}
-```
+- Path traversal protection
+- Rate limiting
+- CORS configuration
+- Input validation
+- Secure file handling
 
 ## License
 
-MIT License - See LICENSE file for details.
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests if applicable
-5. Submit a pull request
-
-## Support
-
-For issues and feature requests, please use the GitHub issue tracker.
+MIT License

@@ -455,7 +455,7 @@ async def create_image(
 ) -> Union[str, list[str]]:
     """Generate images from text prompts using OpenAI's latest gpt-image-1 model.
     
-    Supports both local files and Google Drive files.
+    Supports local files and base64 data.
     
     Args:
         prompt: Text description of the image to generate (max 32000 chars)
@@ -579,10 +579,10 @@ async def analyze_image(
 ) -> str:
     """Analyze an image using OpenAI's Vision API to extract detailed information.
     
-    Supports both local files and Google Drive files.
+    Supports local files and base64 data.
     
     Args:
-        image: Absolute file path, Google Drive URL/ID, or base64 string of image to analyze
+        image: Absolute file path or base64 string of image to analyze
         prompt: Analysis prompt (what to look for in the image)
         model: Vision model to use (gpt-4o, gpt-4o-mini, etc.)
         max_tokens: Maximum tokens in response
@@ -597,7 +597,7 @@ async def analyze_image(
     client = app_context.openai_client
     check_openai_client(client)
     
-    # Get file path (handles Google Drive files, local files, and base64)
+    # Get file path (handles local files and base64)
     file_path = await get_file_path(image)
     
     # Prepare image for API
@@ -671,10 +671,10 @@ async def edit_image(
 ) -> Union[str, list[str]]:
     """Edit existing images using masks and text prompts.
     
-    Supports both local files and Google Drive files.
+    Supports local files and base64 data.
     
     Args:
-        image: Original image (file path, Google Drive URL/ID, or base64)
+        image: Original image (file path or base64)
         prompt: Text description of desired changes
         mask: Optional mask image for selective editing (same formats as image)
         model: Image generation model
@@ -743,10 +743,10 @@ async def generate_variations(
 ) -> Union[str, list[str]]:
     """Generate variations of existing images.
     
-    Supports both local files and Google Drive files.
+    Supports local files and base64 data.
     
     Args:
-        image: Original image (file path, Google Drive URL/ID, or base64)
+        image: Original image (file path or base64)
         n: Number of variations to generate (1-10)
         model: Image generation model
         size: Image dimensions
@@ -810,10 +810,10 @@ async def extract_text(
 ) -> Dict[str, Any]:
     """Extract text from images using OCR.
     
-    Supports both local files and Google Drive files.
+    Supports local files and base64 data.
     
     Args:
-        image: Image to extract text from (file path, Google Drive URL/ID, or base64)
+        image: Image to extract text from (file path or base64)
         language: Language hint for better accuracy (e.g., 'eng', 'spa', 'fra')
         
     Returns:
@@ -874,11 +874,11 @@ async def compare_images(
 ) -> Dict[str, Any]:
     """Compare two images and analyze differences.
     
-    Supports both local files and Google Drive files.
+    Supports local files and base64 data.
     
     Args:
-        image1: First image (file path, Google Drive URL/ID, or base64)
-        image2: Second image (file path, Google Drive URL/ID, or base64)
+        image1: First image (file path or base64)
+        image2: Second image (file path or base64)
         
     Returns:
         Detailed comparison analysis including similarities and differences
@@ -958,10 +958,10 @@ async def smart_edit(
 ) -> Dict[str, Any]:
     """Intelligent image editing with analysis and targeted modifications.
     
-    Supports both local files and Google Drive files.
+    Supports local files and base64 data.
     
     Args:
-        image: Image to edit (file path, Google Drive URL/ID, or base64)
+        image: Image to edit (file path or base64)
         analysis_prompt: What to analyze in the image
         edit_prompt: How to modify based on the analysis
         
@@ -1041,10 +1041,10 @@ async def transform_image(
 ) -> Dict[str, Any]:
     """Apply basic image transformations using PIL.
     
-    Supports both local files and Google Drive files.
+    Supports local files and base64 data.
     
     Args:
-        image: Image to transform (file path, Google Drive URL/ID, or base64)
+        image: Image to transform (file path or base64)
         operation: Type of transformation to apply
         value: Operation-specific value (degrees for rotate, factor for contrast/brightness)
         output_format: Output image format
@@ -1128,10 +1128,10 @@ async def batch_process(
 ) -> Dict[str, Any]:
     """Process multiple images with the same operation.
     
-    Supports both local files and Google Drive files.
+    Supports local files and base64 data.
     
     Args:
-        images: List of images (file paths, Google Drive URLs/IDs, or base64)
+        images: List of images (file paths or base64)
         operation: Operation to perform on all images
         operation_params: Parameters for the operation
         
@@ -1185,10 +1185,10 @@ async def image_metadata(
 ) -> Dict[str, Any]:
     """Extract comprehensive metadata and properties from images.
     
-    Supports both local files and Google Drive files.
+    Supports local files and base64 data.
     
     Args:
-        image: Image to analyze (file path, Google Drive URL/ID, or base64)
+        image: Image to analyze (file path or base64)
         
     Returns:
         Detailed image metadata including EXIF, dimensions, format, etc.
@@ -1252,10 +1252,10 @@ async def describe_and_recreate(
 ) -> Dict[str, Any]:
     """Analyze an image and recreate it with style modifications.
     
-    Supports both local files and Google Drive files.
+    Supports local files and base64 data.
     
     Args:
-        image: Source image (file path, Google Drive URL/ID, or base64)
+        image: Source image (file path or base64)
         style_modification: Description of style changes to apply
         
     Returns:
@@ -1332,10 +1332,10 @@ async def prompt_from_image(
 ) -> Dict[str, Any]:
     """Generate optimized prompts from images for AI image generation.
     
-    Supports both local files and Google Drive files.
+    Supports local files and base64 data.
     
     Args:
-        image: Source image (file path, Google Drive URL/ID, or base64)
+        image: Source image (file path or base64)
         purpose: Purpose of the generated prompt (recreation, variation, improvement, etc.)
         
     Returns:
