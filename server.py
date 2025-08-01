@@ -307,10 +307,12 @@ async def mcp_redirect(request: Request):
         return JSONResponse({"status": "ok"}, status_code=200)
     elif request.method == "POST":
         # Redirect POST requests to /mcp/
-        return JSONResponse({"redirect": "/mcp/"}, status_code=307)
+        from starlette.responses import RedirectResponse
+        return RedirectResponse(url="/mcp/", status_code=307)
     else:
         # Redirect GET requests to /mcp/
-        return JSONResponse({"redirect": "/mcp/"}, status_code=307)
+        from starlette.responses import RedirectResponse
+        return RedirectResponse(url="/mcp/", status_code=307)
 
 # =============================================================================
 # OAUTH DISCOVERY ENDPOINTS (for Claude compatibility)
@@ -352,6 +354,15 @@ async def register_endpoint(request: Request):
     return JSONResponse({
         "status": "success",
         "message": "Registration not required for this MCP server"
+    })
+
+@mcp.custom_route("/auth", methods=["GET", "POST"])
+async def auth_endpoint(request: Request):
+    """Simple auth endpoint for Claude compatibility"""
+    logger.info("Auth endpoint called")
+    return JSONResponse({
+        "status": "authenticated",
+        "message": "No authentication required"
     })
 
 # =============================================================================
