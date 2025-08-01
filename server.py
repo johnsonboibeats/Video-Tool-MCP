@@ -246,13 +246,13 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         
         return await call_next(request)
 
-# Add basic middleware for Railway deployment
-mcp.add_middleware(RateLimitMiddleware)
-mcp.add_middleware(RequestLoggingMiddleware)
-
-logger.info("Security middleware configured")
-logger.info("FastMCP server instance created and configured")
-logger.info("Custom routes registered: /health, /")
+# Add basic middleware for Railway deployment (HTTP mode only)
+if "--transport" not in sys.argv or "stdio" not in sys.argv:
+    mcp.add_middleware(RateLimitMiddleware)
+    mcp.add_middleware(RequestLoggingMiddleware)
+    logger.info("Security middleware configured")
+    logger.info("FastMCP server instance created and configured")
+    logger.info("Custom routes registered: /health, /")
 
 @mcp.custom_route("/health", methods=["GET"])
 async def health_check(request: Request):
