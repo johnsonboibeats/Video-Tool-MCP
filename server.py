@@ -3,7 +3,6 @@
 Image Tool MCP Server - Simplified Railway Deploy Version
 """
 
-print("🔧 Image Tool MCP Server - Starting...")
 
 # Suppress warnings for cleaner deployment
 import warnings
@@ -28,7 +27,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Union
 from pydantic import BaseModel, ConfigDict
 
-print("🔍 Python standard library imports completed")
 
 # Configure logging early
 logging.basicConfig(
@@ -37,22 +35,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-print("📋 Logging configured")
 
 # Core imports
-print("🚀 Loading core dependencies...")
 try:
     import aiofiles
-    print("✅ aiofiles imported")
     from openai import AsyncOpenAI, AsyncAzureOpenAI
-    print("✅ OpenAI client imported")
     from fastmcp import FastMCP, Context
-    print("✅ FastMCP imported")
     from dotenv import load_dotenv
-    print("✅ dotenv imported")
-    print("🎉 All core imports successful!")
 except Exception as e:
-    print(f"❌ CRITICAL: Core import failed: {e}")
     logger.error(f"Core import failed: {e}")
     raise
 
