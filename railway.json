@@ -23,7 +23,7 @@
     "builder": "NIXPACKS"
   },
   "deploy": {
-    "startCommand": "python server.py --port $PORT",
+    "startCommand": "python server.py --transport streamable-http --port $PORT",
     "healthcheckPath": "/health",
     "healthcheckTimeout": 300,
     "restartPolicyType": "ON_FAILURE",
