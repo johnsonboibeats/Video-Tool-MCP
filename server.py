@@ -196,7 +196,7 @@ logger.info(f"Rate limit: {MAX_REQUESTS_PER_MINUTE} requests per minute")
 from starlette.middleware import Middleware
 from starlette.middleware.cors import CORSMiddleware
 
-# Initialize FastMCP without OAuth middleware first
+# Initialize FastMCP server
 mcp = FastMCP("Image Tool MCP")
 
 from starlette.requests import Request
@@ -347,12 +347,12 @@ REFRESH_TOKEN_EXPIRY_DAYS = 30
 # In-memory token storage (use Redis/database in production)
 token_store: Dict[str, Dict[str, Any]] = {}
 
-def generate_access_token(user_id: str, scopes: list = None) -> str:
-    """Generate JWT access token"""
+def generate_access_token(user_id: str, scopes: list = None, audience: str = None) -> str:
+    """Generate JWT access token with audience validation"""
     payload = {
         "sub": user_id,
         "iss": OAUTH_CONFIG["issuer"],
-        "aud": "claude",
+        "aud": audience or "claude",  # RFC 8707: Include specific audience
         "exp": datetime.utcnow() + timedelta(hours=JWT_EXPIRY_HOURS),
         "iat": datetime.utcnow(),
         "scope": " ".join(scopes or ["read", "write"])
@@ -371,10 +371,17 @@ def generate_refresh_token(user_id: str) -> str:
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
-def verify_token(token: str) -> Optional[Dict[str, Any]]:
-    """Verify and decode JWT token"""
+def verify_token(token: str, expected_audience: str = None) -> Optional[Dict[str, Any]]:
+    """Verify and decode JWT token with audience validation"""
     try:
         payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        
+        # Validate audience (RFC 8707 requirement)
+        if expected_audience:
+            token_audience = payload.get("aud")
+            if not token_audience or expected_audience not in (token_audience if isinstance(token_audience, list) else [token_audience]):
+                return None
+        
         return payload
     except jwt.ExpiredSignatureError:
         return None
@@ -394,7 +401,9 @@ async def require_auth(request: Request) -> Optional[Dict[str, Any]]:
     if not token:
         return None
     
-    payload = verify_token(token)
+    # Validate token with audience (RFC 8707)
+    server_uri = f"{request.base_url.scheme}://{request.base_url.netloc}"
+    payload = verify_token(token, expected_audience=server_uri)
     if not payload:
         return None
     
@@ -415,6 +424,22 @@ async def oauth_authorize(request: Request):
     response_type = request.query_params.get("response_type")
     scope = request.query_params.get("scope", "read write")
     state = request.query_params.get("state")
+    resource = request.query_params.get("resource")  # RFC 8707 requirement
+    
+    # Validate resource parameter (RFC 8707)
+    if not resource:
+        return JSONResponse({
+            "error": "invalid_request",
+            "error_description": "resource parameter is required per RFC 8707"
+        }, status_code=400)
+    
+    # Validate resource matches this server
+    server_uri = f"{request.base_url.scheme}://{request.base_url.netloc}"
+    if not resource.startswith(server_uri):
+        return JSONResponse({
+            "error": "invalid_request",
+            "error_description": "resource parameter must match server URI"
+        }, status_code=400)
     
     # Validate parameters
     if not client_id or client_id != "Claude":
@@ -439,6 +464,7 @@ async def oauth_authorize(request: Request):
         "client_id": client_id,
         "redirect_uri": redirect_uri,
         "scope": scope,
+        "resource": resource,  # RFC 8707: Store resource for audience validation
         "expires": datetime.utcnow() + timedelta(minutes=10)
     }
     
@@ -515,7 +541,9 @@ async def handle_authorization_code_grant(form_data) -> JSONResponse:
     user_id = auth_data["user_id"]
     scopes = auth_data["scope"].split()
     
-    access_token = generate_access_token(user_id, scopes)
+    # Include resource as audience (RFC 8707)
+    resource = auth_data.get("resource", "claude")
+    access_token = generate_access_token(user_id, scopes, audience=resource)
     refresh_token = generate_refresh_token(user_id)
     
     # Store refresh token
@@ -523,6 +551,7 @@ async def handle_authorization_code_grant(form_data) -> JSONResponse:
         "user_id": user_id,
         "client_id": client_id,
         "scopes": scopes,
+        "resource": resource,  # RFC 8707: Store resource for audience validation
         "expires": datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRY_DAYS)
     }
     
@@ -573,7 +602,9 @@ async def handle_refresh_token_grant(form_data) -> JSONResponse:
     user_id = token_data["user_id"]
     scopes = token_data["scopes"]
     
-    access_token = generate_access_token(user_id, scopes)
+    # Include resource as audience (RFC 8707)
+    resource = token_data.get("resource", "claude")
+    access_token = generate_access_token(user_id, scopes, audience=resource)
     new_refresh_token = generate_refresh_token(user_id)
     
     # Store new refresh token
@@ -581,6 +612,7 @@ async def handle_refresh_token_grant(form_data) -> JSONResponse:
         "user_id": user_id,
         "client_id": client_id,
         "scopes": scopes,
+        "resource": resource,  # RFC 8707: Store resource for audience validation
         "expires": datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRY_DAYS)
     }
     
@@ -697,10 +729,13 @@ class OAuthMiddleware(BaseHTTPMiddleware):
         # Check for valid OAuth token
         payload = await require_auth(request)
         if not payload:
-            return JSONResponse({
+            # RFC9728 Section 5.1: Include WWW-Authenticate header
+            response = JSONResponse({
                 "error": "invalid_token",
                 "error_description": "Valid OAuth token required"
             }, status_code=401)
+            response.headers["WWW-Authenticate"] = f'Bearer realm="{request.base_url}", error="invalid_token", error_description="Valid OAuth token required"'
+            return response
         
         # Add user info to request state
         request.state.user = payload
@@ -711,12 +746,8 @@ class OAuthMiddleware(BaseHTTPMiddleware):
 # MIDDLEWARE CONFIGURATION
 # =============================================================================
 
-# Apply CORS middleware to FastMCP
-mcp.add_middleware(CORSMiddleware, 
-                   allow_origins=ALLOWED_ORIGINS,
-                   allow_credentials=True,
-                   allow_methods=["*"],
-                   allow_headers=["*"])
+# FastMCP handles CORS automatically, no need to add middleware manually
+# The CORS configuration is handled internally by FastMCP
 
 # Note: OAuth protection is implemented directly in routes that need it
 # rather than using global middleware to avoid conflicts with MCP protocol
