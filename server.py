@@ -80,7 +80,7 @@ class AppContext(BaseModel):
     """Application context with shared resources"""
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    openai_client: Union[AsyncOpenAI, AsyncAzureOpenAI]
+    openai_client: Optional[Union[AsyncOpenAI, AsyncAzureOpenAI]] = None
     temp_dir: Path
     http_client: Optional[httpx.AsyncClient] = None
 
@@ -452,7 +452,7 @@ async def get_file_path(file_input: str) -> str:
 @mcp.tool()
 async def create_image(
     prompt: str,
-    ctx: Context,
+    ctx: Context = None,
     model: Literal["gpt-image-1"] = "gpt-image-1",
     size: Literal["1024x1024", "1536x1024", "1024x1536", "auto"] = "auto",
     quality: Literal["auto", "high", "medium", "low"] = "auto",
@@ -508,7 +508,7 @@ async def create_image(
         raise ValueError("file_path must be an absolute path")
     
     # Progress tracking for batch generation
-    if n > 1:
+    if n > 1 and ctx:
         await ctx.report_progress(0, n, f"Starting generation of {n} images...")
     
     # Prepare API parameters
@@ -539,7 +539,7 @@ async def create_image(
     
     try:
         # Generate images
-        ctx.info(f"Generating {n} image(s) with prompt: {prompt[:100]}...")
+        if ctx: ctx.info(f"Generating {n} image(s) with prompt: {prompt[:100]}...")
         response = await client.images.generate(**params)
         
         # Process results
@@ -547,7 +547,7 @@ async def create_image(
         file_paths = []
         
         for i, image_data in enumerate(response.data):
-            if n > 1:
+            if n > 1 and ctx:
                 await ctx.report_progress(i + 1, n, f"Processing image {i + 1}/{n}")
             
             b64_data = image_data.b64_json
@@ -563,7 +563,7 @@ async def create_image(
                 
                 await save_base64_image(b64_data, save_path, output_format.upper())
                 file_paths.append(str(save_path))
-                ctx.info(f"Image saved to: {save_path}")
+                if ctx: ctx.info(f"Image saved to: {save_path}")
                 
             else:
                 # Return as base64 string
@@ -576,13 +576,13 @@ async def create_image(
             return images if n > 1 else images[0]
             
     except Exception as e:
-        ctx.error(f"Image generation failed: {str(e)}")
+        if ctx: ctx.error(f"Image generation failed: {str(e)}")
         raise ValueError(f"Failed to generate image: {str(e)}")
 
 @mcp.tool()
 async def analyze_image(
     image: str,
-    ctx: Context,
+    ctx: Context = None,
     prompt: str = "Describe this image in detail, including objects, people, scenery, colors, mood, and any text visible.",
     model: str = "gpt-4o",
     max_tokens: int = 1000,
@@ -632,7 +632,7 @@ async def analyze_image(
             raise ValueError(f"Invalid image input: {str(e)}")
     
     try:
-        ctx.info(f"Analyzing image with model {model}...")
+        if ctx: ctx.info(f"Analyzing image with model {model}...")
         
         # Call Vision API
         response = await client.chat.completions.create(
@@ -656,11 +656,11 @@ async def analyze_image(
         )
         
         analysis = response.choices[0].message.content
-        ctx.info("Image analysis completed successfully")
+        if ctx: ctx.info("Image analysis completed successfully")
         return analysis
         
     except Exception as e:
-        ctx.error(f"Image analysis failed: {str(e)}")
+        if ctx: ctx.error(f"Image analysis failed: {str(e)}")
         raise ValueError(f"Failed to analyze image: {str(e)}")
 
 # =============================================================================
