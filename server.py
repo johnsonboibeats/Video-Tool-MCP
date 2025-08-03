@@ -1082,90 +1082,6 @@ async def create_image(
         if ctx: ctx.error(f"Image generation failed: {str(e)}")
         raise ValueError(f"Failed to generate image: {str(e)}")
 
-@mcp.tool()
-async def analyze_image(
-    image: str,
-    ctx: Context = None,
-    prompt: str = "Describe this image in detail, including objects, people, scenery, colors, mood, and any text visible.",
-    model: str = "gpt-4o",
-    max_tokens: int = 1000,
-    detail: Literal["low", "high", "auto"] = "auto"
-) -> str:
-    """Analyze an image using OpenAI's Vision API to extract detailed information.
-    
-    Supports local files and base64 data.
-    
-    Args:
-        image: Absolute file path or base64 string of image to analyze
-        prompt: Analysis prompt (what to look for in the image)
-        model: Vision model to use (gpt-4o, gpt-4o-mini, etc.)
-        max_tokens: Maximum tokens in response
-        detail: Image detail level for processing
-        
-    Returns:
-        Detailed analysis of the image content
-    """
-    # Get application context
-    app_context = get_app_context()
-    
-    client = app_context.openai_client
-    check_openai_client(client)
-    
-    # Get file path (handles local files and base64)
-    file_path = await get_file_path(image)
-    
-    # Prepare image for API
-    try:
-        # Validate the file path using the new unified approach
-        validated_path = validate_image_path(file_path)
-        
-        # Load image file as base64
-        base64_data, mime_type = await load_image_as_base64(validated_path)
-        image_url = f"data:{mime_type};base64,{base64_data}"
-        
-    except (ValueError, FileNotFoundError) as e:
-        # If validation fails, try to handle as base64 data
-        if is_base64_image(image):
-            if image.startswith("data:image/"):
-                image_url = image
-            else:
-                # Add data URL prefix
-                image_url = f"data:image/png;base64,{image}"
-        else:
-            raise ValueError(f"Invalid image input: {str(e)}")
-    
-    try:
-        if ctx: ctx.info(f"Analyzing image with model {model}...")
-        
-        # Call Vision API
-        response = await client.chat.completions.create(
-            model=model,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": image_url,
-                                "detail": detail
-                            }
-                        }
-                    ]
-                }
-            ],
-            max_tokens=max_tokens
-        )
-        
-        analysis = response.choices[0].message.content
-        if ctx: ctx.info("Image analysis completed successfully")
-        return analysis
-        
-    except Exception as e:
-        if ctx: ctx.error(f"Image analysis failed: {str(e)}")
-        raise ValueError(f"Failed to analyze image: {str(e)}")
-
 # =============================================================================
 # MISSING TOOLS RESTORATION
 # =============================================================================
@@ -1381,89 +1297,6 @@ async def extract_text(
         }
 
 @mcp.tool()
-async def compare_images(
-    image1: str,
-    image2: str,
-    ctx: Context = None
-) -> Dict[str, Any]:
-    """Compare two images and analyze differences.
-    
-    Supports local files and base64 data.
-    
-    Args:
-        image1: First image (file path or base64)
-        image2: Second image (file path or base64)
-        
-    Returns:
-        Detailed comparison analysis including similarities and differences
-    """
-    app_context = get_app_context()
-    client = app_context.openai_client
-    
-    image1_path = await get_file_path(image1)
-    image2_path = await get_file_path(image2)
-    
-    image1_base64, _ = await load_image_as_base64(image1_path)
-    image2_base64, _ = await load_image_as_base64(image2_path)
-    
-    prompt = """Compare these two images and provide a detailed analysis of:
-1. Overall similarity/difference score (0-100%)
-2. Visual elements that are the same
-3. Visual elements that are different
-4. Color differences
-5. Composition differences
-6. Content changes
-7. Quality differences
-8. Style variations
-
-Be specific and quantitative where possible."""
-    
-    try:
-        if ctx: ctx.info("Comparing images...")
-        
-        response = await client.chat.completions.create(
-            model="gpt-4o",
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/png;base64,{image1_base64}",
-                                "detail": "high"
-                            }
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/png;base64,{image2_base64}",
-                                "detail": "high"
-                            }
-                        }
-                    ]
-                }
-            ],
-            max_tokens=1500
-        )
-        
-        return {
-            "success": True,
-            "comparison": response.choices[0].message.content,
-            "image1": str(image1_path),
-            "image2": str(image2_path)
-        }
-        
-    except Exception as e:
-        return {
-            "success": False,
-            "error": str(e),
-            "image1": str(image1_path),
-            "image2": str(image2_path)
-        }
-
-@mcp.tool()
 async def smart_edit(
     image: str,
     analysis_prompt: str,
@@ -1632,7 +1465,7 @@ async def transform_image(
 @mcp.tool()
 async def batch_process(
     images: List[str],
-    operation: Literal["analyze", "extract_text", "transform", "resize"],
+    operation: Literal["extract_text", "transform", "resize"],
     operation_params: Dict[str, Any],
     ctx: Context = None
 ) -> Dict[str, Any]:
@@ -1656,9 +1489,7 @@ async def batch_process(
             await ctx.report_progress(i + 1, total_images, f"Processing image {i + 1}/{total_images}")
         
         try:
-            if operation == "analyze":
-                result = await analyze_image(image, **operation_params)
-            elif operation == "extract_text":
+            if operation == "extract_text":
                 result = await extract_text(image, **operation_params)
             elif operation == "transform":
                 result = await transform_image(image, **operation_params)
