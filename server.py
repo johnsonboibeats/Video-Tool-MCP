@@ -92,8 +92,7 @@ _transport_mode: str = "http"  # Default to http (remote)
 def get_default_output_mode() -> str:
     """Determine default output mode based on transport"""
     global _transport_mode
-    # Remote servers (http/streamable-http) should use URLs for better UX
-    # Local servers (stdio) can use file paths
+    # Remote: URLs for better UX, Local: Files for direct filesystem access
     return "url" if _transport_mode != "stdio" else "file"
 
 def get_app_context() -> AppContext:
@@ -1049,13 +1048,13 @@ async def create_image(
     output_compression: Optional[int] = None,
     moderation: Literal["auto", "low"] = "auto",
     n: int = 1,
-    output_mode: Optional[Literal["base64", "file", "url"]] = None,
+    output_mode: Optional[Literal["file", "url"]] = None,
     file_path: Optional[str] = None
 ) -> Union[str, list[str]]:
     """Generate images from text prompts using OpenAI's latest gpt-image-1 model.
     
     REMOTE USAGE: Always returns download URLs (best UX, no connection issues).
-    LOCAL USAGE: Choose output_mode='file' for file paths or 'base64' for data embedding.
+    LOCAL USAGE: Always returns file paths (direct filesystem access).
     
     Args:
         prompt: Text description of the image to generate (max 32000 chars)
@@ -1067,11 +1066,11 @@ async def create_image(
         output_compression: Compression level 0-100 (webp/jpeg only)
         moderation: Content moderation level
         n: Number of images to generate (1-10)
-        output_mode: OPTIONAL - 'file' for file paths, 'base64' for data, 'url' to force URLs (auto-detected)
-        file_path: OPTIONAL - Only needed when output_mode='file'
+        output_mode: OPTIONAL - Auto-detected ('url' for remote, 'file' for local)
+        file_path: OPTIONAL - Only needed for local file mode
         
     Returns:
-        Download URLs (remote), file paths (local file mode), or base64 data (local base64 mode)
+        Download URLs (remote) or file paths (local)
     """
     # Get application context
     app_context = get_app_context()
@@ -1084,11 +1083,17 @@ async def create_image(
     if output_mode is None:
         output_mode = get_default_output_mode()
     
-    # FORCE URL mode for remote usage even if other modes were requested
-    # This handles Claude Web automatically adding file parameters and ensures best UX
-    if _transport_mode != "stdio" and output_mode in ["file", "base64"]:
-        if ctx: await ctx.info(f"Overriding {output_mode} mode to URL for remote usage (better UX)")
-        output_mode = "url"
+    # FORCE appropriate mode based on transport
+    if _transport_mode != "stdio":
+        # Remote: Always use URLs for best UX
+        if output_mode != "url":
+            if ctx: await ctx.info(f"Using URL mode for remote usage (better UX)")
+            output_mode = "url"
+    else:
+        # Local: Always use files for direct filesystem access
+        if output_mode != "file":
+            if ctx: await ctx.info(f"Using file mode for local usage (direct filesystem access)")
+            output_mode = "file"
     
     # No size limitations needed for URL mode (files stored on server)
     
@@ -1187,20 +1192,14 @@ async def create_image(
                 
                 if ctx: await ctx.info(f"Full-size image available at: {download_url}")
                 
-            else:
-                # Return as base64 string (local stdio usage only)
-                base64_image = f"data:image/{output_format};base64,{b64_data}"
-                images.append(base64_image)
+            # Note: base64 mode removed - not needed for either remote or local usage
         
         # Log response preparation
         if ctx: 
             if output_mode == "file":
                 await ctx.info(f"Returning file paths: {file_paths}")
-            elif output_mode == "url":
+            else:  # url mode
                 await ctx.info(f"Returning {len(images)} download URL(s)")
-            else:
-                data_size = sum(len(img) for img in images)
-                await ctx.info(f"Returning base64 images, total data size: {data_size} bytes")
         
         # Return results
         if output_mode == "file":
@@ -1225,7 +1224,7 @@ async def edit_image(
     size: Literal["1024x1024", "1536x1024", "1024x1536", "auto"] = "auto",
     quality: Literal["auto", "high", "medium", "low"] = "auto",
     output_format: Literal["png", "jpeg", "webp"] = "png",
-    output_mode: Optional[Literal["base64", "file", "url"]] = None,
+    output_mode: Optional[Literal["file", "url"]] = None,
     file_path: Optional[str] = None,
     ctx: Context = None
 ) -> Union[str, list[str]]:
@@ -1301,7 +1300,7 @@ async def generate_variations(
     size: Literal["1024x1024", "1536x1024", "1024x1536", "auto"] = "auto",
     quality: Literal["auto", "high", "medium", "low"] = "auto",
     output_format: Literal["png", "jpeg", "webp"] = "png",
-    output_mode: Optional[Literal["base64", "file", "url"]] = None,
+    output_mode: Optional[Literal["file", "url"]] = None,
     file_path: Optional[str] = None,
     ctx: Context = None
 ) -> Union[str, list[str]]:
@@ -1439,7 +1438,7 @@ async def smart_edit(
     image: str,
     analysis_prompt: str,
     edit_prompt: str,
-    output_mode: Optional[Literal["base64", "file", "url"]] = None,
+    output_mode: Optional[Literal["file", "url"]] = None,
     file_path: Optional[str] = None,
     ctx: Context = None
 ) -> Dict[str, Any]:
@@ -1543,7 +1542,7 @@ async def transform_image(
     operation: Literal["resize", "rotate", "flip_horizontal", "flip_vertical", "grayscale", "blur", "sharpen", "contrast", "brightness"],
     value: Optional[Union[int, float]] = None,
     output_format: Literal["png", "jpeg", "webp"] = "png",
-    output_mode: Optional[Literal["base64", "file", "url"]] = None,
+    output_mode: Optional[Literal["file", "url"]] = None,
     output_path: Optional[str] = None,
     ctx: Context = None
 ) -> Dict[str, Any]:
@@ -1758,7 +1757,7 @@ async def image_metadata(
 async def describe_and_recreate(
     image: str,
     style_modification: str,
-    output_mode: Optional[Literal["base64", "file", "url"]] = None,
+    output_mode: Optional[Literal["file", "url"]] = None,
     file_path: Optional[str] = None,
     ctx: Context = None
 ) -> Dict[str, Any]:
