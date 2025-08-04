@@ -107,7 +107,7 @@ def check_openai_client(client) -> None:
         raise ValueError("OpenAI API key not configured. Please set OPENAI_API_KEY environment variable.")
 
 async def handle_file_input(file_input: str, app_context: AppContext) -> str:
-    """Handle file input: base64 data and absolute paths"""
+    """Handle file input: base64 data, HTTP URLs, and absolute paths"""
     # Handle base64 data URLs
     if file_input.startswith('data:'):
         try:
@@ -131,8 +131,34 @@ async def handle_file_input(file_input: str, app_context: AppContext) -> str:
         except Exception as e:
             raise ValueError(f"Invalid base64 data: {e}")
     
+    # Handle HTTP URLs by downloading them
+    if file_input.startswith('http://') or file_input.startswith('https://'):
+        try:
+            if not app_context.http_client:
+                raise ValueError("HTTP client not available for downloading URLs")
+            
+            response = await app_context.http_client.get(file_input)
+            response.raise_for_status()
+            
+            # Determine file extension from Content-Type or URL
+            content_type = response.headers.get('content-type', '')
+            if content_type:
+                extension = mimetypes.guess_extension(content_type.split(';')[0]) or '.bin'
+            else:
+                # Extract extension from URL
+                extension = Path(file_input).suffix or '.bin'
+            
+            temp_path = app_context.temp_dir / f"temp_download_{int(time.time())}{extension}"
+            
+            async with aiofiles.open(temp_path, 'wb') as f:
+                await f.write(response.content)
+            
+            return str(temp_path)
+        except Exception as e:
+            raise ValueError(f"Failed to download file from URL: {e}")
+    
     # Reject relative paths and other potentially unsafe inputs
-    raise ValueError("Invalid file path: must be absolute path or base64 data")
+    raise ValueError("Invalid file path: must be absolute path, base64 data, or HTTP URL")
 
 def initialize_app_context():
     """Initialize application context synchronously"""
@@ -1058,8 +1084,12 @@ def validate_image_path(path: str) -> str:
     if path.startswith('data:'):
         return path
     
+    # Allow HTTP URLs from the same server (for download URLs)
+    if path.startswith('http://') or path.startswith('https://'):
+        return path
+    
     # Reject relative paths and other potentially unsafe inputs
-    raise ValueError("Invalid file path: must be absolute path or base64 data")
+    raise ValueError("Invalid file path: must be absolute path, base64 data, or HTTP URL")
 
 def is_base64_image(data: str) -> bool:
     """Check if string is valid base64 image data"""
@@ -1080,6 +1110,11 @@ async def get_file_path(file_input: str) -> str:
     
     # Handle base64 data URLs by converting to temp file
     if file_input.startswith('data:'):
+        app_context = get_app_context()
+        return await handle_file_input(file_input, app_context)
+    
+    # Handle HTTP URLs by downloading to temp file
+    if file_input.startswith('http://') or file_input.startswith('https://'):
         app_context = get_app_context()
         return await handle_file_input(file_input, app_context)
     
