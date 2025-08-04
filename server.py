@@ -85,6 +85,16 @@ class AppContext(BaseModel):
 # Global app context for FastMCP tools
 _global_app_context: Optional[AppContext] = None
 
+# Global transport mode detection
+_transport_mode: str = "http"  # Default to http (remote)
+
+def get_default_output_mode() -> str:
+    """Determine default output mode based on transport"""
+    global _transport_mode
+    # Remote servers (http/streamable-http) should use base64
+    # Local servers (stdio) can use file paths
+    return "base64" if _transport_mode != "stdio" else "file"
+
 def get_app_context() -> AppContext:
     """Get application context from global reference"""
     if _global_app_context is not None:
@@ -964,7 +974,7 @@ async def create_image(
     output_compression: Optional[int] = None,
     moderation: Literal["auto", "low"] = "auto",
     n: int = 1,
-    output_mode: Literal["base64", "file"] = "base64",
+    output_mode: Optional[Literal["base64", "file"]] = None,
     file_path: Optional[str] = None
 ) -> Union[str, list[str]]:
     """Generate images from text prompts using OpenAI's latest gpt-image-1 model.
@@ -981,7 +991,7 @@ async def create_image(
         output_compression: Compression level 0-100 (webp/jpeg only)
         moderation: Content moderation level
         n: Number of images to generate (1-10)
-        output_mode: Return as base64 data or save to file
+        output_mode: Return as base64 data or save to file (auto-detects based on transport if not specified)
         file_path: Absolute path for file output (required if output_mode='file')
         
     Returns:
@@ -993,6 +1003,10 @@ async def create_image(
     client = app_context.openai_client
     check_openai_client(client)
     temp_dir = app_context.temp_dir
+    
+    # Auto-detect output mode based on transport if not specified
+    if output_mode is None:
+        output_mode = get_default_output_mode()
     
     # Validate inputs
     if len(prompt) > 32000:
@@ -1095,7 +1109,7 @@ async def edit_image(
     size: Literal["1024x1024", "1536x1024", "1024x1536", "auto"] = "auto",
     quality: Literal["auto", "high", "medium", "low"] = "auto",
     output_format: Literal["png", "jpeg", "webp"] = "png",
-    output_mode: Literal["base64", "file"] = "base64",
+    output_mode: Optional[Literal["base64", "file"]] = None,
     file_path: Optional[str] = None,
     ctx: Context = None
 ) -> Union[str, list[str]]:
@@ -1111,7 +1125,7 @@ async def edit_image(
         size: Image dimensions
         quality: Generation quality level
         output_format: Image format
-        output_mode: Return as base64 data or save to file
+        output_mode: Return as base64 data or save to file (auto-detects based on transport if not specified)
         file_path: Absolute path for file output (required if output_mode='file')
         
     Returns:
@@ -1120,6 +1134,10 @@ async def edit_image(
     app_context = get_app_context()
     client = app_context.openai_client
     temp_dir = app_context.temp_dir
+    
+    # Auto-detect output mode based on transport if not specified
+    if output_mode is None:
+        output_mode = get_default_output_mode()
     
     # Get file paths
     image_path = await get_file_path(image)
@@ -1167,7 +1185,7 @@ async def generate_variations(
     size: Literal["1024x1024", "1536x1024", "1024x1536", "auto"] = "auto",
     quality: Literal["auto", "high", "medium", "low"] = "auto",
     output_format: Literal["png", "jpeg", "webp"] = "png",
-    output_mode: Literal["base64", "file"] = "base64",
+    output_mode: Optional[Literal["base64", "file"]] = None,
     file_path: Optional[str] = None,
     ctx: Context = None
 ) -> Union[str, list[str]]:
@@ -1182,7 +1200,7 @@ async def generate_variations(
         size: Image dimensions
         quality: Generation quality level
         output_format: Image format
-        output_mode: Return as base64 data or save to file
+        output_mode: Return as base64 data or save to file (auto-detects based on transport if not specified)
         file_path: Absolute path for file output (required if output_mode='file')
         
     Returns:
@@ -1191,6 +1209,10 @@ async def generate_variations(
     app_context = get_app_context()
     client = app_context.openai_client
     temp_dir = app_context.temp_dir
+    
+    # Auto-detect output mode based on transport if not specified
+    if output_mode is None:
+        output_mode = get_default_output_mode()
     
     if n < 1 or n > 10:
         raise ValueError("Number of variations must be between 1 and 10")
@@ -1301,6 +1323,8 @@ async def smart_edit(
     image: str,
     analysis_prompt: str,
     edit_prompt: str,
+    output_mode: Optional[Literal["base64", "file"]] = None,
+    file_path: Optional[str] = None,
     ctx: Context = None
 ) -> Dict[str, Any]:
     """Intelligent image editing with analysis and targeted modifications.
@@ -1311,12 +1335,18 @@ async def smart_edit(
         image: Image to edit (file path or base64)
         analysis_prompt: What to analyze in the image
         edit_prompt: How to modify based on the analysis
+        output_mode: Return as base64 data or save to file (auto-detects based on transport if not specified)
+        file_path: Absolute path for file output (required if output_mode='file')
         
     Returns:
         Edited image with analysis and modification details
     """
     app_context = get_app_context()
     client = app_context.openai_client
+    
+    # Auto-detect output mode based on transport if not specified
+    if output_mode is None:
+        output_mode = get_default_output_mode()
     
     image_path = await get_file_path(image)
     image_base64, mime_type = await load_image_as_base64(image_path)
@@ -1363,12 +1393,26 @@ async def smart_edit(
         
         b64_data = response.data[0].b64_json
         
-        return {
-            "success": True,
-            "analysis": analysis,
-            "edited_image": f"data:image/png;base64,{b64_data}",
-            "source_file": str(image_path)
-        }
+        if output_mode == "file":
+            if not file_path:
+                # Generate temp file path if none provided
+                file_path = str(app_context.temp_dir / f"smart_edit_{int(time.time())}.png")
+            save_path = Path(file_path)
+            await save_base64_image(b64_data, save_path, "PNG")
+            
+            return {
+                "success": True,
+                "analysis": analysis,
+                "edited_image_path": str(save_path),
+                "source_file": str(image_path)
+            }
+        else:
+            return {
+                "success": True,
+                "analysis": analysis,
+                "edited_image": f"data:image/png;base64,{b64_data}",
+                "source_file": str(image_path)
+            }
         
     except Exception as e:
         return {
@@ -1383,6 +1427,7 @@ async def transform_image(
     operation: Literal["resize", "rotate", "flip_horizontal", "flip_vertical", "grayscale", "blur", "sharpen", "contrast", "brightness"],
     value: Optional[Union[int, float]] = None,
     output_format: Literal["png", "jpeg", "webp"] = "png",
+    output_mode: Optional[Literal["base64", "file"]] = None,
     output_path: Optional[str] = None,
     ctx: Context = None
 ) -> Dict[str, Any]:
@@ -1395,6 +1440,7 @@ async def transform_image(
         operation: Type of transformation to apply
         value: Operation-specific value (degrees for rotate, factor for contrast/brightness)
         output_format: Output image format
+        output_mode: Return as base64 data or save to file (auto-detects based on transport if not specified)
         output_path: Optional absolute path to save result
         
     Returns:
@@ -1402,6 +1448,10 @@ async def transform_image(
     """
     if not PIL_AVAILABLE:
         return {"success": False, "error": "PIL/Pillow not available"}
+    
+    # Auto-detect output mode based on transport if not specified
+    if output_mode is None:
+        output_mode = get_default_output_mode()
     
     try:
         image_path = await get_file_path(image)
@@ -1443,7 +1493,11 @@ async def transform_image(
                 img = enhancer.enhance(value)
             
             # Save result
-            if output_path:
+            if output_mode == "file":
+                if not output_path:
+                    # Generate temp file path if none provided
+                    app_context = get_app_context()
+                    output_path = str(app_context.temp_dir / f"transformed_{int(time.time())}.{output_format}")
                 save_path = Path(output_path)
                 img.save(save_path, format=output_format.upper())
                 return {"success": True, "file_path": str(save_path)}
@@ -1588,6 +1642,8 @@ async def image_metadata(
 async def describe_and_recreate(
     image: str,
     style_modification: str,
+    output_mode: Optional[Literal["base64", "file"]] = None,
+    file_path: Optional[str] = None,
     ctx: Context = None
 ) -> Dict[str, Any]:
     """Analyze an image and recreate it with style modifications.
@@ -1597,12 +1653,18 @@ async def describe_and_recreate(
     Args:
         image: Source image (file path or base64)
         style_modification: Description of style changes to apply
+        output_mode: Return as base64 data or save to file (auto-detects based on transport if not specified)
+        file_path: Absolute path for file output (required if output_mode='file')
         
     Returns:
         Original description and recreated image with style modifications
     """
     app_context = get_app_context()
     client = app_context.openai_client
+    
+    # Auto-detect output mode based on transport if not specified
+    if output_mode is None:
+        output_mode = get_default_output_mode()
     
     image_path = await get_file_path(image)
     image_base64, mime_type = await load_image_as_base64(image_path)
@@ -1649,13 +1711,28 @@ async def describe_and_recreate(
         
         b64_data = response.data[0].b64_json
         
-        return {
-            "success": True,
-            "original_description": original_description,
-            "style_modification": style_modification,
-            "recreated_image": f"data:image/png;base64,{b64_data}",
-            "source_file": str(image_path)
-        }
+        if output_mode == "file":
+            if not file_path:
+                # Generate temp file path if none provided
+                file_path = str(app_context.temp_dir / f"recreated_{int(time.time())}.png")
+            save_path = Path(file_path)
+            await save_base64_image(b64_data, save_path, "PNG")
+            
+            return {
+                "success": True,
+                "original_description": original_description,
+                "style_modification": style_modification,
+                "recreated_image_path": str(save_path),
+                "source_file": str(image_path)
+            }
+        else:
+            return {
+                "success": True,
+                "original_description": original_description,
+                "style_modification": style_modification,
+                "recreated_image": f"data:image/png;base64,{b64_data}",
+                "source_file": str(image_path)
+            }
         
     except Exception as e:
         return {
@@ -1743,6 +1820,9 @@ if __name__ == "__main__":
                        help="Port to bind to (http mode only)")
     
     args = parser.parse_args()
+    
+    # Set global transport mode for automatic output mode detection
+    _transport_mode = args.transport
     
     if args.transport == "stdio":
         # In stdio mode, logging goes to stderr (configured above)
