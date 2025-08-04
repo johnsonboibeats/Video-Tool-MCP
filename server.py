@@ -1015,6 +1015,12 @@ async def create_image(
         if ctx: await ctx.info("Overriding file mode to base64 for remote usage")
         output_mode = "base64"
     
+    # For remote usage with base64, limit size to prevent connection issues
+    # Large base64 responses can cause MCP connection drops
+    if _transport_mode != "stdio" and output_mode == "base64" and size == "1024x1024":
+        if ctx: await ctx.info("Using smaller size for remote base64 to prevent connection issues")
+        size = "1024x1024"  # Keep original size for now, may reduce if issues persist
+    
     # Validate inputs
     if len(prompt) > 32000:
         raise ValueError("Prompt must be 32000 characters or less")
@@ -1065,6 +1071,7 @@ async def create_image(
         # Generate images
         if ctx: await ctx.info(f"Generating {n} image(s) with prompt: {prompt[:100]}...")
         response = await client.images.generate(**params)
+        if ctx: await ctx.info(f"OpenAI API call completed successfully, processing {len(response.data)} images")
         
         # Process results
         images = []
@@ -1091,7 +1098,25 @@ async def create_image(
                 
             else:
                 # Return as base64 string
-                images.append(f"data:image/{output_format};base64,{b64_data}")
+                base64_image = f"data:image/{output_format};base64,{b64_data}"
+                
+                # Check if response might be too large for MCP protocol
+                if len(base64_image) > 1500000:  # ~1.5MB threshold
+                    if ctx: await ctx.info(f"Image too large for direct return ({len(base64_image)} bytes), saving to temp file")
+                    # Fallback: save to temp file and return info
+                    temp_path = temp_dir / f"temp_image_{i+1}.{output_format}"
+                    await save_base64_image(b64_data, temp_path, output_format.upper())
+                    images.append(f"Image saved to temporary file: {temp_path} (too large for direct return)")
+                else:
+                    images.append(base64_image)
+        
+        # Log response preparation
+        if ctx: 
+            if output_mode == "file":
+                await ctx.info(f"Returning file paths: {file_paths}")
+            else:
+                data_size = sum(len(img) for img in images)
+                await ctx.info(f"Returning base64 images, total data size: {data_size} bytes")
         
         # Return results
         if output_mode == "file":
