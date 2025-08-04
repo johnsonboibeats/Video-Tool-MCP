@@ -899,6 +899,60 @@ async def jwks_endpoint(request: Request):
 # UTILITY FUNCTIONS
 # =============================================================================
 
+async def handle_image_output(
+    b64_data: str, 
+    output_format: str, 
+    output_mode: Optional[str], 
+    file_path: Optional[str],
+    temp_dir: Path,
+    ctx: Context = None
+) -> str:
+    """Standardized image output handling for all tools"""
+    
+    # Auto-detect output mode based on transport if not specified
+    if output_mode is None:
+        output_mode = get_default_output_mode()
+    
+    # FORCE appropriate mode based on transport
+    if _transport_mode != "stdio":
+        # Remote: Always use URLs for best UX
+        if output_mode != "url":
+            if ctx: await ctx.info(f"Using URL mode for remote usage (better UX)")
+            output_mode = "url"
+    else:
+        # Local: Always use files for direct filesystem access
+        if output_mode != "file":
+            if ctx: await ctx.info(f"Using file mode for local usage (direct filesystem access)")
+            output_mode = "file"
+    
+    if output_mode == "file":
+        # Save to specified file path
+        if not file_path:
+            raise ValueError("file_path required for file output")
+        save_path = Path(file_path)
+        await save_base64_image(b64_data, save_path, output_format.upper())
+        if ctx: await ctx.info(f"Image saved to: {save_path}")
+        return str(save_path)
+        
+    else:  # url mode
+        # Create download URL
+        if ctx: await ctx.info("Creating download URL")
+        
+        # Save to publicly accessible download directory
+        filename = f"generated_{uuid.uuid4().hex[:8]}.{output_format}"
+        download_path = temp_dir / "downloads" / filename
+        download_path.parent.mkdir(exist_ok=True)
+        
+        # Clean up old files before saving new one
+        await cleanup_old_downloads(temp_dir, max_age_hours=24, max_total_size_mb=100)
+        
+        await save_base64_image(b64_data, download_path, output_format.upper())
+        
+        # Return download URL
+        download_url = f"https://web-production-472cb.up.railway.app/download/{filename}"
+        if ctx: await ctx.info(f"Full-size image available at: {download_url}")
+        return f"Image generated successfully! Download URL: {download_url}"
+
 async def cleanup_old_downloads(temp_dir: Path, max_age_hours: int = 24, max_total_size_mb: int = 100) -> None:
     """Clean up old download files to prevent disk space issues"""
     downloads_dir = temp_dir / "downloads"
@@ -1230,7 +1284,8 @@ async def edit_image(
 ) -> Union[str, list[str]]:
     """Edit existing images using masks and text prompts.
     
-    Supports local files and base64 data.
+    REMOTE USAGE: Always returns download URLs (best UX, no connection issues).
+    LOCAL USAGE: Always returns file paths (direct filesystem access).
     
     Args:
         image: Original image (file path or base64)
@@ -1240,11 +1295,11 @@ async def edit_image(
         size: Image dimensions
         quality: Generation quality level
         output_format: Image format
-        output_mode: Return as base64 data or save to file (auto-detects based on transport if not specified)
-        file_path: Absolute path for file output (required if output_mode='file')
+        output_mode: OPTIONAL - Auto-detected ('url' for remote, 'file' for local)
+        file_path: OPTIONAL - Only needed for local file mode
         
     Returns:
-        Edited image(s) as base64 data or file paths
+        Download URLs (remote) or file paths (local)
     """
     app_context = get_app_context()
     client = app_context.openai_client
@@ -1280,14 +1335,11 @@ async def edit_image(
         
         b64_data = response.data[0].b64_json
         
-        if output_mode == "file":
-            if not file_path:
-                raise ValueError("file_path required for file output")
-            save_path = Path(file_path)
-            await save_base64_image(b64_data, save_path, output_format.upper())
-            return str(save_path)
-        else:
-            return f"data:image/{output_format};base64,{b64_data}"
+        # Use standardized output handling
+        app_context = get_app_context()
+        return await handle_image_output(
+            b64_data, output_format, output_mode, file_path, app_context.temp_dir, ctx
+        )
             
     except Exception as e:
         raise ValueError(f"Failed to edit image: {str(e)}")
@@ -1306,7 +1358,8 @@ async def generate_variations(
 ) -> Union[str, list[str]]:
     """Generate variations of existing images.
     
-    Supports local files and base64 data.
+    REMOTE USAGE: Always returns download URLs (best UX, no connection issues).
+    LOCAL USAGE: Always returns file paths (direct filesystem access).
     
     Args:
         image: Original image (file path or base64)
@@ -1315,11 +1368,11 @@ async def generate_variations(
         size: Image dimensions
         quality: Generation quality level
         output_format: Image format
-        output_mode: Return as base64 data or save to file (auto-detects based on transport if not specified)
-        file_path: Absolute path for file output (required if output_mode='file')
+        output_mode: OPTIONAL - Auto-detected ('url' for remote, 'file' for local)
+        file_path: OPTIONAL - Only needed for local file mode
         
     Returns:
-        Image variation(s) as base64 data or file paths
+        Download URLs (remote) or file paths (local)
     """
     app_context = get_app_context()
     client = app_context.openai_client
@@ -1347,22 +1400,21 @@ async def generate_variations(
         if ctx: await ctx.info(f"Generating {n} variation(s)...")
         response = await client.images.create_variation(**params)
         
+        # Process results using standardized output handling
         results = []
         for i, img_data in enumerate(response.data):
             b64_data = img_data.b64_json
             
-            if output_mode == "file":
-                if not file_path:
-                    raise ValueError("file_path required for file output")
+            # For multiple variations, modify file path with index
+            variation_file_path = file_path
+            if file_path and n > 1:
                 path = Path(file_path)
-                if n > 1:
-                    save_path = path.parent / f"{path.stem}_{i+1}{path.suffix}"
-                else:
-                    save_path = path
-                await save_base64_image(b64_data, save_path, output_format.upper())
-                results.append(str(save_path))
-            else:
-                results.append(f"data:image/{output_format};base64,{b64_data}")
+                variation_file_path = str(path.parent / f"{path.stem}_{i+1}{path.suffix}")
+            
+            result = await handle_image_output(
+                b64_data, output_format, output_mode, variation_file_path, temp_dir, ctx
+            )
+            results.append(result)
         
         return results if n > 1 else results[0]
         
@@ -1508,26 +1560,17 @@ async def smart_edit(
         
         b64_data = response.data[0].b64_json
         
-        if output_mode == "file":
-            if not file_path:
-                # Generate temp file path if none provided
-                file_path = str(app_context.temp_dir / f"smart_edit_{int(time.time())}.png")
-            save_path = Path(file_path)
-            await save_base64_image(b64_data, save_path, "PNG")
-            
-            return {
-                "success": True,
-                "analysis": analysis,
-                "edited_image_path": str(save_path),
-                "source_file": str(image_path)
-            }
-        else:
-            return {
-                "success": True,
-                "analysis": analysis,
-                "edited_image": f"data:image/png;base64,{b64_data}",
-                "source_file": str(image_path)
-            }
+        # Use standardized output handling
+        result = await handle_image_output(
+            b64_data, "png", output_mode, file_path, app_context.temp_dir, ctx
+        )
+        
+        return {
+            "success": True,
+            "analysis": analysis,
+            "edited_image": result,
+            "source_file": str(image_path)
+        }
         
     except Exception as e:
         return {
@@ -1607,26 +1650,22 @@ async def transform_image(
                 enhancer = ImageEnhance.Brightness(img)
                 img = enhancer.enhance(value)
             
-            # Save result
-            if output_mode == "file":
-                if not output_path:
-                    # Generate temp file path if none provided
-                    app_context = get_app_context()
-                    output_path = str(app_context.temp_dir / f"transformed_{int(time.time())}.{output_format}")
-                save_path = Path(output_path)
-                img.save(save_path, format=output_format.upper())
-                return {"success": True, "file_path": str(save_path)}
-            else:
-                # Return as base64
-                buffer = io.BytesIO()
-                img.save(buffer, format=output_format.upper())
-                buffer.seek(0)
-                b64_data = base64.b64encode(buffer.getvalue()).decode()
-                return {
-                    "success": True,
-                    "image": f"data:image/{output_format};base64,{b64_data}",
-                    "dimensions": f"{img.width}x{img.height}"
-                }
+            # Save result using standardized output handling
+            buffer = io.BytesIO()
+            img.save(buffer, format=output_format.upper())
+            buffer.seek(0)
+            b64_data = base64.b64encode(buffer.getvalue()).decode()
+            
+            app_context = get_app_context()
+            result = await handle_image_output(
+                b64_data, output_format, output_mode, output_path, app_context.temp_dir, ctx
+            )
+            
+            return {
+                "success": True,
+                "image": result,
+                "dimensions": f"{img.width}x{img.height}"
+            }
                 
     except Exception as e:
         return {"success": False, "error": str(e)}
@@ -1826,28 +1865,18 @@ async def describe_and_recreate(
         
         b64_data = response.data[0].b64_json
         
-        if output_mode == "file":
-            if not file_path:
-                # Generate temp file path if none provided
-                file_path = str(app_context.temp_dir / f"recreated_{int(time.time())}.png")
-            save_path = Path(file_path)
-            await save_base64_image(b64_data, save_path, "PNG")
-            
-            return {
-                "success": True,
-                "original_description": original_description,
-                "style_modification": style_modification,
-                "recreated_image_path": str(save_path),
-                "source_file": str(image_path)
-            }
-        else:
-            return {
-                "success": True,
-                "original_description": original_description,
-                "style_modification": style_modification,
-                "recreated_image": f"data:image/png;base64,{b64_data}",
-                "source_file": str(image_path)
-            }
+        # Use standardized output handling
+        result = await handle_image_output(
+            b64_data, "png", output_mode, file_path, app_context.temp_dir, ctx
+        )
+        
+        return {
+            "success": True,
+            "original_description": original_description,
+            "style_modification": style_modification,
+            "recreated_image": result,
+            "source_file": str(image_path)
+        }
         
     except Exception as e:
         return {
