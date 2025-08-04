@@ -24,6 +24,7 @@ import string
 import sys
 import tempfile
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Union
 from pydantic import BaseModel, ConfigDict
@@ -202,7 +203,7 @@ logger.info(f"Rate limit: {MAX_REQUESTS_PER_MINUTE} requests per minute")
 
 # Create FastMCP server
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, FileResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from collections import defaultdict
 
@@ -303,6 +304,23 @@ async def root_endpoint(request: Request):
         "health_check": "/health",
         "mcp_endpoint": "/mcp/"
     })
+
+@mcp.custom_route("/download/{filename}", methods=["GET"])
+async def download_image(request: Request):
+    """Serve generated images for download"""
+    filename = request.path_params["filename"]
+    logger.info(f"Download request for: {filename}")
+    
+    # Get application context for temp directory
+    app_context = get_app_context()
+    download_path = app_context.temp_dir / "downloads" / filename
+    
+    if download_path.exists() and download_path.is_file():
+        logger.info(f"Serving file: {download_path}")
+        return FileResponse(download_path)
+    else:
+        logger.warning(f"File not found: {download_path}")
+        return JSONResponse({"error": "File not found"}, status_code=404)
 
 @mcp.custom_route("/mcp", methods=["GET", "HEAD", "POST"])
 async def mcp_redirect(request: Request):
@@ -1102,11 +1120,20 @@ async def create_image(
                 
                 # Check if response might be too large for MCP protocol
                 if len(base64_image) > 1500000:  # ~1.5MB threshold
-                    if ctx: await ctx.info(f"Image too large for direct return ({len(base64_image)} bytes), saving to temp file")
-                    # Fallback: save to temp file and return info
-                    temp_path = temp_dir / f"temp_image_{i+1}.{output_format}"
-                    await save_base64_image(b64_data, temp_path, output_format.upper())
-                    images.append(f"Image saved to temporary file: {temp_path} (too large for direct return)")
+                    if ctx: await ctx.info(f"Image too large for direct return ({len(base64_image)} bytes), creating download URL")
+                    
+                    # Save to publicly accessible download directory
+                    filename = f"generated_{uuid.uuid4().hex[:8]}.{output_format}"
+                    download_path = temp_dir / "downloads" / filename
+                    download_path.parent.mkdir(exist_ok=True)
+                    
+                    await save_base64_image(b64_data, download_path, output_format.upper())
+                    
+                    # Return download URL instead of base64
+                    download_url = f"https://web-production-472cb.up.railway.app/download/{filename}"
+                    images.append(f"Image generated successfully! Download URL: {download_url}")
+                    
+                    if ctx: await ctx.info(f"Full-size image available at: {download_url}")
                 else:
                     images.append(base64_image)
         
