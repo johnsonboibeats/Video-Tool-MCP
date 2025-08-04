@@ -979,7 +979,8 @@ async def create_image(
 ) -> Union[str, list[str]]:
     """Generate images from text prompts using OpenAI's latest gpt-image-1 model.
     
-    Supports local files and base64 data.
+    REMOTE USAGE: Leave output_mode and file_path unspecified for automatic base64 output.
+    LOCAL USAGE: Optionally specify output_mode='file' and file_path for file output.
     
     Args:
         prompt: Text description of the image to generate (max 32000 chars)
@@ -991,11 +992,11 @@ async def create_image(
         output_compression: Compression level 0-100 (webp/jpeg only)
         moderation: Content moderation level
         n: Number of images to generate (1-10)
-        output_mode: Return as base64 data or save to file (auto-detects based on transport if not specified)
-        file_path: Absolute path for file output (required if output_mode='file')
+        output_mode: OPTIONAL - Leave unspecified for auto-detection (base64 for remote, file for local)
+        file_path: OPTIONAL - Only needed if explicitly using output_mode='file'
         
     Returns:
-        Generated image(s) as base64 data or file paths
+        Base64 data URL(s) for remote usage, or file path(s) for local usage
     """
     # Get application context
     app_context = get_app_context()
