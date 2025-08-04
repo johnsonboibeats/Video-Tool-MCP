@@ -1009,6 +1009,12 @@ async def create_image(
     if output_mode is None:
         output_mode = get_default_output_mode()
     
+    # FORCE base64 for remote usage even if file mode was explicitly requested
+    # This handles Claude Web automatically adding file parameters
+    if _transport_mode != "stdio" and output_mode == "file":
+        if ctx: ctx.info("Overriding file mode to base64 for remote usage")
+        output_mode = "base64"
+    
     # Validate inputs
     if len(prompt) > 32000:
         raise ValueError("Prompt must be 32000 characters or less")
