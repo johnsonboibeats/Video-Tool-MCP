@@ -272,7 +272,7 @@ async def health_check(request: Request):
             "status": "healthy",
             "timestamp": time.time(),
             "server": "Image Tool MCP Server",
-            "oauth_enabled": True,
+            "oauth_enabled": False,
             "oauth_issuer": OAUTH_CONFIG["issuer"],
             "oauth_endpoints": {
                 "authorization": "/oauth/authorize",
