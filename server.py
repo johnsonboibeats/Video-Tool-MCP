@@ -1012,7 +1012,7 @@ async def create_image(
     # FORCE base64 for remote usage even if file mode was explicitly requested
     # This handles Claude Web automatically adding file parameters
     if _transport_mode != "stdio" and output_mode == "file":
-        if ctx: ctx.info("Overriding file mode to base64 for remote usage")
+        if ctx: await ctx.info("Overriding file mode to base64 for remote usage")
         output_mode = "base64"
     
     # Validate inputs
@@ -1063,7 +1063,7 @@ async def create_image(
     
     try:
         # Generate images
-        if ctx: ctx.info(f"Generating {n} image(s) with prompt: {prompt[:100]}...")
+        if ctx: await ctx.info(f"Generating {n} image(s) with prompt: {prompt[:100]}...")
         response = await client.images.generate(**params)
         
         # Process results
@@ -1087,7 +1087,7 @@ async def create_image(
                 
                 await save_base64_image(b64_data, save_path, output_format.upper())
                 file_paths.append(str(save_path))
-                if ctx: ctx.info(f"Image saved to: {save_path}")
+                if ctx: await ctx.info(f"Image saved to: {save_path}")
                 
             else:
                 # Return as base64 string
@@ -1100,7 +1100,7 @@ async def create_image(
             return images if n > 1 else images[0]
             
     except Exception as e:
-        if ctx: ctx.error(f"Image generation failed: {str(e)}")
+        if ctx: await ctx.error(f"Image generation failed: {str(e)}")
         raise ValueError(f"Failed to generate image: {str(e)}")
 
 # =============================================================================
@@ -1167,7 +1167,7 @@ async def edit_image(
         params["mask"] = mask_base64
     
     try:
-        if ctx: ctx.info(f"Editing image with prompt: {prompt[:100]}...")
+        if ctx: await ctx.info(f"Editing image with prompt: {prompt[:100]}...")
         response = await client.images.edit(**params)
         
         b64_data = response.data[0].b64_json
@@ -1236,7 +1236,7 @@ async def generate_variations(
     }
     
     try:
-        if ctx: ctx.info(f"Generating {n} variation(s)...")
+        if ctx: await ctx.info(f"Generating {n} variation(s)...")
         response = await client.images.create_variation(**params)
         
         results = []
@@ -1287,7 +1287,7 @@ async def extract_text(
     prompt = "Extract all text from this image. If the image contains multiple languages, identify each language. Provide the text with confidence scores and approximate locations if possible."
     
     try:
-        if ctx: ctx.info("Extracting text from image...")
+        if ctx: await ctx.info("Extracting text from image...")
         
         response = await client.chat.completions.create(
             model="gpt-4o",
@@ -1362,7 +1362,7 @@ async def smart_edit(
     analysis_prompt_full = f"{analysis_prompt} Provide specific details that would help with targeted editing."
     
     try:
-        if ctx: ctx.info("Analyzing image for smart editing...")
+        if ctx: await ctx.info("Analyzing image for smart editing...")
         
         analysis_response = await client.chat.completions.create(
             model="gpt-4o",
@@ -1389,7 +1389,7 @@ async def smart_edit(
         # Now edit based on analysis
         edit_prompt_full = f"Based on this analysis: {analysis}\n\nApply these changes: {edit_prompt}"
         
-        if ctx: ctx.info("Performing smart edit...")
+        if ctx: await ctx.info("Performing smart edit...")
         
         response = await client.images.edit(
             model="gpt-image-1",
@@ -1680,7 +1680,7 @@ async def describe_and_recreate(
     describe_prompt = "Provide a detailed, technical description of this image including: subject matter, composition, lighting, color palette, style, mood, and any specific visual elements. Be precise and comprehensive."
     
     try:
-        if ctx: ctx.info("Analyzing image for recreation...")
+        if ctx: await ctx.info("Analyzing image for recreation...")
         
         description_response = await client.chat.completions.create(
             model="gpt-4o",
@@ -1707,7 +1707,7 @@ async def describe_and_recreate(
         # Now recreate with style modifications
         recreate_prompt = f"Recreate this image: {original_description}\n\nApply these style modifications: {style_modification}"
         
-        if ctx: ctx.info("Recreating image with style modifications...")
+        if ctx: await ctx.info("Recreating image with style modifications...")
         
         response = await client.images.generate(
             model="gpt-image-1",
@@ -1774,7 +1774,7 @@ async def prompt_from_image(
     prompt = f"Create an optimized text prompt for AI image generation that would recreate this image. Purpose: {purpose}. The prompt should be detailed, specific, and include: subject, composition, lighting, color palette, style, mood, and any technical details. Format it for best AI image generation results."
     
     try:
-        if ctx: ctx.info("Generating optimized prompt from image...")
+        if ctx: await ctx.info("Generating optimized prompt from image...")
         
         response = await client.chat.completions.create(
             model="gpt-4o",
