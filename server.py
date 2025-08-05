@@ -1348,13 +1348,16 @@ async def edit_image(
     image_path = await get_file_path(image)
     mask_path = await get_file_path(mask) if mask else None
     
-    # Prepare images for API
+    # Prepare images for API (OpenAI client expects file objects, not base64 strings)
     image_base64, _ = await load_image_as_base64(image_path)
+    image_bytes = base64.b64decode(image_base64)
+    image_file = io.BytesIO(image_bytes)
+    image_file.name = "image.png"  # Required for OpenAI client
     
     params = {
         "model": model,
         "prompt": prompt,
-        "image": image_base64,
+        "image": image_file,
         "size": size if size != "auto" else "1024x1024",
         "quality": quality,
         "response_format": "b64_json"
@@ -1362,7 +1365,10 @@ async def edit_image(
     
     if mask_path:
         mask_base64, _ = await load_image_as_base64(mask_path)
-        params["mask"] = mask_base64
+        mask_bytes = base64.b64decode(mask_base64)
+        mask_file = io.BytesIO(mask_bytes)
+        mask_file.name = "mask.png"  # Required for OpenAI client
+        params["mask"] = mask_file
     
     try:
         if ctx: await ctx.info(f"Editing image with prompt: {prompt[:100]}...")
@@ -1423,9 +1429,14 @@ async def generate_variations(
     image_path = await get_file_path(image)
     image_base64, _ = await load_image_as_base64(image_path)
     
+    # Prepare image for API (OpenAI client expects file objects, not base64 strings)
+    image_bytes = base64.b64decode(image_base64)
+    image_file = io.BytesIO(image_bytes)
+    image_file.name = "image.png"  # Required for OpenAI client
+    
     params = {
         "model": model,
-        "image": image_base64,
+        "image": image_file,
         "n": n,
         "size": size if size != "auto" else "1024x1024",
         "response_format": "b64_json"
