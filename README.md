@@ -194,7 +194,6 @@ The server supports the following input types:
 8. **batch_process** - Process multiple images
 9. **image_metadata** - Extract image metadata
 10. **describe_and_recreate** - Describe and recreate images
-11. **prompt_from_image** - Generate prompts from images
 
 ## Error Handling
 

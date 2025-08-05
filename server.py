@@ -1827,69 +1827,6 @@ async def describe_and_recreate(
             "source_file": str(image_path)
         }
 
-@mcp.tool()
-async def prompt_from_image(
-    image: str,
-    purpose: str = "accurate recreation",
-    ctx: Context = None
-) -> Dict[str, Any]:
-    """Generate optimized prompts from images for AI image generation.
-    
-    Supports local files and base64 data.
-    
-    Args:
-        image: Source image (file path or base64)
-        purpose: Purpose of the generated prompt (recreation, variation, improvement, etc.)
-        
-    Returns:
-        Optimized prompt for AI image generation
-    """
-    app_context = get_app_context()
-    client = app_context.openai_client
-    
-    image_path = await get_file_path(image)
-    image_base64, mime_type = await load_image_as_base64(image_path)
-    
-    prompt = f"Create an optimized text prompt for AI image generation that would recreate this image. Purpose: {purpose}. The prompt should be detailed, specific, and include: subject, composition, lighting, color palette, style, mood, and any technical details. Format it for best AI image generation results."
-    
-    try:
-        if ctx: await ctx.info("Generating optimized prompt from image...")
-        
-        response = await client.chat.completions.create(
-            model="gpt-4o",
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:{mime_type};base64,{image_base64}",
-                                "detail": "high"
-                            }
-                        }
-                   ]
-                }
-            ],
-            max_tokens=1000
-        )
-        
-        generated_prompt = response.choices[0].message.content
-        
-        return {
-            "success": True,
-            "generated_prompt": generated_prompt,
-            "purpose": purpose,
-            "source_file": str(image_path)
-        }
-        
-    except Exception as e:
-        return {
-            "success": False,
-            "error": str(e),
-            "source_file": str(image_path)
-        }
 
 # =============================================================================
 # SERVER STARTUP
