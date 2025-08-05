@@ -1644,6 +1644,72 @@ async def image_metadata(
     except Exception as e:
         return {"success": False, "error": str(e)}
 
+@mcp.tool()
+async def analyze_image(
+    image: str,
+    prompt: str = "Describe this image in detail, including objects, people, scenery, colors, mood, and any text visible.",
+    model: str = "gpt-4o",
+    max_tokens: int = 1000,
+    detail: Literal["low", "high", "auto"] = "auto",
+    ctx: Context = None
+) -> str:
+    """Analyze an image using OpenAI's Vision API to extract detailed information.
+    
+    Supports local files, base64 data, and HTTP URLs.
+    
+    Args:
+        image: Image to analyze (file path, base64 data, or HTTP URL)
+        prompt: Analysis prompt (what to look for in the image)
+        model: Vision model to use (gpt-4o, gpt-4o-mini, etc.)
+        max_tokens: Maximum tokens in response
+        detail: Image detail level for processing
+        
+    Returns:
+        Detailed analysis of the image content
+    """
+    app_context = get_app_context()
+    client = app_context.openai_client
+    check_openai_client(client)
+    
+    try:
+        if ctx: await ctx.info(f"Analyzing image with model {model}...")
+        
+        # Get file path (handles local files, URLs, and base64)
+        file_path = await get_file_path(image)
+        
+        # Load image file as base64
+        base64_data, mime_type = await load_image_as_base64(file_path)
+        image_url = f"data:{mime_type};base64,{base64_data}"
+        
+        # Call Vision API
+        response = await client.chat.completions.create(
+            model=model,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": image_url,
+                                "detail": detail
+                            }
+                        }
+                    ]
+                }
+            ],
+            max_tokens=max_tokens
+        )
+        
+        analysis = response.choices[0].message.content
+        if ctx: await ctx.info("Image analysis completed successfully")
+        return analysis
+        
+    except Exception as e:
+        error_msg = f"Failed to analyze image: {str(e)}"
+        if ctx: await ctx.error(error_msg)
+        raise ValueError(error_msg)
 
 
 # =============================================================================
