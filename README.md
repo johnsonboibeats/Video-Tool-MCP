@@ -190,10 +190,8 @@ The server supports the following input types:
 4. **generate_variations** - Create variations of existing images
 5. **extract_text** - Extract text from images using OCR
 6. **compare_images** - Compare two images
-7. **transform_image** - Apply transformations (resize, rotate, etc.)
-8. **batch_process** - Process multiple images
-9. **image_metadata** - Extract image metadata
-10. **describe_and_recreate** - Describe and recreate images
+7. **batch_process** - Process multiple images
+8. **image_metadata** - Extract image metadata
 
 ## Error Handling
 
