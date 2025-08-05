@@ -1359,8 +1359,7 @@ async def edit_image(
         "prompt": prompt,
         "image": image_file,
         "size": size if size != "auto" else "1024x1024",
-        "quality": quality,
-        "response_format": "b64_json"
+        "quality": quality
     }
     
     if mask_path:
@@ -1438,8 +1437,7 @@ async def generate_variations(
         "model": model,
         "image": image_file,
         "n": n,
-        "size": size if size != "auto" else "1024x1024",
-        "response_format": "b64_json"
+        "size": size if size != "auto" else "1024x1024"
     }
     
     try:
