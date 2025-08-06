@@ -107,7 +107,7 @@ def check_openai_client(client) -> None:
         raise ValueError("OpenAI API key not configured. Please set OPENAI_API_KEY environment variable.")
 
 async def handle_file_input(file_input: str, app_context: AppContext) -> str:
-    """Handle file input: base64 data, HTTP URLs, and absolute paths"""
+    """Handle file input from base64 data or HTTP URLs."""
     # Handle base64 data URLs
     if file_input.startswith('data:'):
         try:
@@ -157,8 +157,9 @@ async def handle_file_input(file_input: str, app_context: AppContext) -> str:
         except Exception as e:
             raise ValueError(f"Failed to download file from URL: {e}")
     
-    # Reject relative paths and other potentially unsafe inputs
-    raise ValueError("Invalid file path: must be absolute path, base64 data, or HTTP URL")
+    # This function should not be called with other input types.
+    # The get_file_path function is responsible for routing.
+    raise ValueError("Internal error: handle_file_input called with invalid input type.")
 
 def initialize_app_context():
     """Initialize application context synchronously"""
@@ -1062,35 +1063,6 @@ async def load_image_as_base64(file_path: Union[str, Path]) -> tuple[str, str]:
     base64_data = base64.b64encode(image_data).decode()
     return base64_data, mime_type
 
-def validate_image_path(path: str) -> str:
-    """Validate file path input with security checks"""
-    if not path or not path.strip():
-        raise ValueError("File path cannot be empty")
-    
-    path = path.strip()
-    
-    # Security: Prevent path traversal attacks
-    if ".." in path:
-        raise ValueError("Invalid file path: potential security risk")
-    
-    # Allow local absolute paths (starting with /)
-    if path.startswith('/'):
-        if not os.path.exists(path):
-            raise FileNotFoundError(f"File not found: {path}")
-        return path
-    
-        
-    # Allow base64 data URLs
-    if path.startswith('data:'):
-        return path
-    
-    # Allow HTTP URLs from the same server (for download URLs)
-    if path.startswith('http://') or path.startswith('https://'):
-        return path
-    
-    # Reject relative paths and other potentially unsafe inputs
-    raise ValueError("Invalid file path: must be absolute path, base64 data, or HTTP URL")
-
 def is_base64_image(data: str) -> bool:
     """Check if string is valid base64 image data"""
     try:
@@ -1105,21 +1077,38 @@ def is_base64_image(data: str) -> bool:
 
 async def get_file_path(file_input: str) -> str:
     """Handle file input and return local file path"""
-    if not file_input:
+    if not file_input or not file_input.strip():
         raise ValueError("File input cannot be empty")
-    
+
+    file_input = file_input.strip()
+
+    # Security: Prevent path traversal attacks
+    if ".." in file_input:
+        raise ValueError("Invalid file path: potential security risk")
+
+    app_context = get_app_context()
+
     # Handle base64 data URLs by converting to temp file
     if file_input.startswith('data:'):
-        app_context = get_app_context()
         return await handle_file_input(file_input, app_context)
     
     # Handle HTTP URLs by downloading to temp file
     if file_input.startswith('http://') or file_input.startswith('https://'):
-        app_context = get_app_context()
         return await handle_file_input(file_input, app_context)
     
-    # Validate and return absolute paths
-    return validate_image_path(file_input)
+    # Handle absolute paths
+    if os.path.isabs(file_input):
+        if _transport_mode == "stdio":
+            if os.path.exists(file_input):
+                return file_input
+            else:
+                raise FileNotFoundError(f"File not found: {file_input}")
+        else:
+            # In remote mode, we cannot access local file paths.
+            raise ValueError(f"Cannot access local file path '{file_input}' in remote mode. Please provide a public URL or base64-encoded image.")
+
+    # If we get here, it's an invalid input
+    raise ValueError("Invalid file path: must be an absolute path, base64 data, or HTTP URL")
 
 # =============================================================================
 # IMAGE PROCESSING TOOLS
