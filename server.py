@@ -1348,40 +1348,84 @@ async def edit_image(
     image_path = await get_file_path(image)
     mask_path = await get_file_path(mask) if mask else None
     
-    # Prepare images for API (OpenAI client expects file objects, not base64 strings)
+    # Load images as bytes
     image_base64, _ = await load_image_as_base64(image_path)
     image_bytes = base64.b64decode(image_base64)
-    image_file = io.BytesIO(image_bytes)
-    image_file.name = "image.png"  # Required for OpenAI client
-    
-    params = {
-        "model": model,
-        "prompt": prompt,
-        "image": image_file,
-        "size": size if size != "auto" else "1024x1024",
-        "quality": quality
-    }
-    
-    if mask_path:
-        mask_base64, _ = await load_image_as_base64(mask_path)
-        mask_bytes = base64.b64decode(mask_base64)
-        mask_file = io.BytesIO(mask_bytes)
-        mask_file.name = "mask.png"  # Required for OpenAI client
-        params["mask"] = mask_file
     
     try:
         if ctx: await ctx.info(f"Editing image with prompt: {prompt[:100]}...")
-        response = await client.images.edit(**params)
         
-        b64_data = response.data[0].b64_json
+        # Use httpx for multipart/form-data request
+        import httpx
+        import time
+        start_time = time.time()
+        
+        # Get API key from client
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key and hasattr(client, 'api_key'):
+            api_key = client.api_key
+        
+        headers = {
+            "Authorization": f"Bearer {api_key}"
+        }
+        
+        # Prepare files for multipart upload
+        files = {
+            "image": ("image.png", image_bytes, "image/png"),
+        }
+        
+        if mask_path:
+            mask_base64, _ = await load_image_as_base64(mask_path)
+            mask_bytes = base64.b64decode(mask_base64)
+            files["mask"] = ("mask.png", mask_bytes, "image/png")
+        
+        # Prepare data
+        data = {
+            "model": model,
+            "prompt": prompt,
+            "n": "1",
+            "size": size if size != "auto" else "1024x1024",
+        }
+        
+        # Add quality parameter if using gpt-image-1
+        if model == "gpt-image-1" and quality != "auto":
+            data["quality"] = quality
+        
+        # Add response format for base64
+        data["response_format"] = "b64_json"
+        
+        # Make the request using httpx
+        async with httpx.AsyncClient(timeout=120.0) as http_client:
+            response = await http_client.post(
+                "https://api.openai.com/v1/images/edits",
+                headers=headers,
+                files=files,
+                data=data
+            )
+            
+            api_time = time.time() - start_time
+            if ctx: await ctx.info(f"OpenAI API call completed in {api_time:.2f}s")
+            
+            if response.status_code != 200:
+                error_msg = f"API error {response.status_code}: {response.text}"
+                if ctx: await ctx.error(error_msg)
+                raise ValueError(error_msg)
+            
+            response_data = response.json()
+            b64_data = response_data["data"][0]["b64_json"]
         
         # Use standardized output handling
-        app_context = get_app_context()
-        return await handle_image_output(
-            b64_data, output_format, output_mode, file_path, app_context.temp_dir, ctx
+        result = await handle_image_output(
+            b64_data, output_format, output_mode, file_path, temp_dir, ctx
         )
+        
+        total_time = time.time() - start_time
+        if ctx: await ctx.info(f"Total edit_image processing time: {total_time:.2f}s")
+        
+        return result
             
     except Exception as e:
+        if ctx: await ctx.error(f"Edit image failed: {str(e)}")
         raise ValueError(f"Failed to edit image: {str(e)}")
 
 @mcp.tool()
