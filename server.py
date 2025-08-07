@@ -1193,9 +1193,79 @@ async def validate_image_file(file_path: Union[str, Path]) -> bool:
         logger.warning(f"Invalid image file {file_path}: {e}")
         return False
 
-async def load_image_as_base64(file_path: Union[str, Path]) -> tuple[str, str]:
-    """Load image file and return as base64 with mime type"""
-    file_path = Path(file_path)
+async def load_image_from_drive(file_id: str) -> tuple[str, str]:
+    """Load image directly from Google Drive without downloading to temp file"""
+    app_context = get_app_context()
+    
+    if not app_context.drive_service:
+        raise ValueError("Google Drive service not available")
+    
+    try:
+        # Get file metadata to determine MIME type
+        file_metadata = app_context.drive_service.files().get(
+            fileId=file_id,
+            fields="mimeType, name"
+        ).execute()
+        
+        mime_type = file_metadata['mimeType']
+        if not mime_type.startswith('image/'):
+            raise ValueError(f"File is not an image (MIME type: {mime_type})")
+        
+        # Download file content directly to memory
+        request = app_context.drive_service.files().get_media(fileId=file_id)
+        file_stream = io.BytesIO()
+        downloader = MediaIoBaseDownload(file_stream, request)
+        
+        done = False
+        while done is False:
+            status, done = downloader.next_chunk()
+        
+        # Get the image data
+        file_stream.seek(0)
+        image_data = file_stream.read()
+        
+        # Convert to base64
+        base64_data = base64.b64encode(image_data).decode()
+        return base64_data, mime_type
+        
+    except Exception as e:
+        raise ValueError(f"Failed to load image from Google Drive: {e}")
+
+async def load_image_as_base64(file_input: Union[str, Path]) -> tuple[str, str]:
+    """Load image file and return as base64 with mime type
+    
+    Supports:
+    - Local file paths
+    - Google Drive URLs/IDs (direct API access)
+    - Base64 data URLs
+    """
+    
+    # Handle Google Drive URLs/IDs directly without temp files
+    if isinstance(file_input, str):
+        if file_input.startswith('drive://') or 'drive.google.com' in file_input or 'docs.google.com' in file_input:
+            file_id = extract_file_id_from_url(file_input)
+            if file_id:
+                app_context = get_app_context()
+                if app_context.drive_service:
+                    return await load_image_from_drive(file_id)
+        
+        # Handle base64 data URLs
+        if file_input.startswith('data:'):
+            # Extract base64 data from data URL
+            if ',' in file_input:
+                header, base64_data = file_input.split(',', 1)
+                # Extract MIME type from header
+                if 'image/' in header:
+                    mime_type = header.split('image/')[1].split(';')[0]
+                    mime_type = f"image/{mime_type}"
+                else:
+                    mime_type = "image/png"
+                return base64_data, mime_type
+            else:
+                raise ValueError("Invalid data URL format")
+    
+    # Handle local file paths
+    file_path = Path(file_input)
     
     # Validate the image file if PIL is available
     if PIL_AVAILABLE and not await validate_image_file(file_path):
@@ -1246,11 +1316,33 @@ async def get_file_path(file_input: str) -> str:
     if file_input.startswith('data:'):
         return await handle_file_input(file_input, app_context)
     
-    # Handle Google Drive URLs by converting to direct download URLs
+    # Handle Google Drive URLs - use direct API access if possible
     if file_input.startswith('drive://') or 'drive.google.com' in file_input or 'docs.google.com' in file_input:
         file_id = extract_file_id_from_url(file_input)
         if file_id:
-            # Try multiple Google Drive download URL formats
+            # If we have Google Drive API access, download directly to memory
+            if app_context.drive_service:
+                try:
+                    base64_data, mime_type = await load_image_from_drive(file_id)
+                    
+                    # Save to temp file for compatibility with existing code
+                    # TODO: Future optimization - process directly from base64 data
+                    ext_map = {
+                        "image/png": ".png",
+                        "image/jpeg": ".jpg", 
+                        "image/webp": ".webp",
+                        "image/gif": ".gif"
+                    }
+                    extension = ext_map.get(mime_type, ".png")
+                    temp_path = app_context.temp_dir / f"drive_image_{file_id}{extension}"
+                    
+                    await save_base64_image(base64_data, temp_path)
+                    return str(temp_path)
+                    
+                except Exception as e:
+                    logger.warning(f"Google Drive API access failed: {e}, falling back to HTTP download")
+            
+            # Fallback to HTTP download if API access fails
             download_urls = [
                 f"https://drive.usercontent.google.com/download?id={file_id}&export=download",
                 f"https://drive.google.com/uc?export=download&id={file_id}",
@@ -1595,6 +1687,35 @@ async def edit_image(
     except Exception as e:
         if ctx: await ctx.error(f"Edit image failed: {str(e)}")
         raise ValueError(f"Failed to edit image: {str(e)}")
+
+async def process_drive_image_direct(file_id: str, operation: str, **kwargs) -> Dict[str, Any]:
+    """
+    Process Google Drive images directly without temp files for maximum efficiency
+    
+    This is the most efficient path for Google Drive images:
+    Drive API -> Memory -> OpenAI API -> Result
+    (No temp file downloads required)
+    """
+    app_context = get_app_context()
+    
+    if not app_context.drive_service:
+        raise ValueError("Google Drive service not available")
+    
+    # Load image directly from Drive
+    base64_data, mime_type = await load_image_from_drive(file_id)
+    
+    # Convert to BytesIO for OpenAI API
+    image_bytes = base64.b64decode(base64_data)
+    image_file = io.BytesIO(image_bytes)
+    image_file.name = "image.png"  # Required for OpenAI client
+    
+    # Process based on operation type
+    if operation == "generate_variations":
+        return await _generate_variations_from_bytes(image_file, **kwargs)
+    elif operation == "analyze_image":
+        return await _analyze_image_from_base64(base64_data, **kwargs)
+    else:
+        raise ValueError(f"Unsupported operation: {operation}")
 
 @mcp.tool()
 async def generate_variations(
