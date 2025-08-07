@@ -1573,6 +1573,7 @@ async def edit_image(
     size: Literal["1024x1024", "1536x1024", "1024x1536", "auto"] = "auto",
     quality: Literal["auto", "high", "medium", "low"] = "auto",
     output_format: Literal["png", "jpeg", "webp"] = "png",
+    n: int = 1,
     output_mode: Optional[Literal["file", "url"]] = None,
     file_path: Optional[str] = None,
     ctx: Context = None
@@ -1584,12 +1585,13 @@ async def edit_image(
     
     Args:
         image: Original image (file path or base64)
-        prompt: Text description of desired changes
+        prompt: Text description of desired changes (max 4000 chars)
         mask: Optional mask image for selective editing (same formats as image)
         model: Image generation model
         size: Image dimensions
         quality: Generation quality level
         output_format: Image format
+        n: Number of images to generate (1-10)
         output_mode: OPTIONAL - Auto-detected ('url' for remote, 'file' for local)
         file_path: OPTIONAL - Only needed for local file mode
         
@@ -1604,13 +1606,27 @@ async def edit_image(
     if output_mode is None:
         output_mode = get_default_output_mode()
     
+    # Validate parameters according to OpenAI API specification
+    if len(prompt) > 4000:
+        raise ValueError("Prompt must be 4000 characters or less")
+    
+    if n < 1 or n > 10:
+        raise ValueError("Number of images must be between 1 and 10")
+    
     # Get file paths
     image_path = await get_file_path(image)
     mask_path = await get_file_path(mask) if mask else None
     
     # Load images as bytes
-    image_base64, _ = await load_image_as_base64(image_path)
+    image_base64, image_mime = await load_image_as_base64(image_path)
     image_bytes = base64.b64decode(image_base64)
+    
+    # Determine file extension from MIME type
+    image_ext = "png"  # default
+    if "jpeg" in image_mime or "jpg" in image_mime:
+        image_ext = "jpg"
+    elif "webp" in image_mime:
+        image_ext = "webp"
     
     try:
         if ctx: await ctx.info(f"Editing image with prompt: {prompt[:100]}...")
@@ -1631,28 +1647,30 @@ async def edit_image(
         
         # Prepare files for multipart upload
         files = {
-            "image": ("image.png", image_bytes, "image/png"),
+            "image": (f"image.{image_ext}", image_bytes, f"image/{image_ext}"),
         }
         
         if mask_path:
-            mask_base64, _ = await load_image_as_base64(mask_path)
+            mask_base64, mask_mime = await load_image_as_base64(mask_path)
             mask_bytes = base64.b64decode(mask_base64)
-            files["mask"] = ("mask.png", mask_bytes, "image/png")
+            mask_ext = "png"  # default
+            if "jpeg" in mask_mime or "jpg" in mask_mime:
+                mask_ext = "jpg"
+            elif "webp" in mask_mime:
+                mask_ext = "webp"
+            files["mask"] = (f"mask.{mask_ext}", mask_bytes, f"image/{mask_ext}")
         
         # Prepare data
         data = {
             "model": model,
             "prompt": prompt,
-            "n": "1",
+            "n": n,  # Use the parameter from function signature
             "size": size if size != "auto" else "1024x1024",
         }
         
         # Add quality parameter if using gpt-image-1
         if model == "gpt-image-1" and quality != "auto":
             data["quality"] = quality
-        
-        # Add response format for base64
-        data["response_format"] = "b64_json"
         
         # Make the request using httpx
         async with httpx.AsyncClient(timeout=120.0) as http_client:
@@ -1672,13 +1690,44 @@ async def edit_image(
                 raise ValueError(error_msg)
             
             response_data = response.json()
-            b64_data = response_data["data"][0]["b64_json"]
+            
+            # Validate response structure
+            if "data" not in response_data or not response_data["data"]:
+                error_msg = "Invalid response format: missing data array"
+                if ctx: await ctx.error(error_msg)
+                raise ValueError(error_msg)
+            
+            if len(response_data["data"]) != n:
+                error_msg = f"Expected {n} images, got {len(response_data['data'])}"
+                if ctx: await ctx.error(error_msg)
+                raise ValueError(error_msg)
+            
+            # Handle multiple images if n > 1
+            if n == 1:
+                b64_data = response_data["data"][0]["b64_json"]
+                result = await handle_image_output(
+                    b64_data, output_format, output_mode, file_path, temp_dir, ctx
+                )
+            else:
+                # Handle multiple images
+                results = []
+                for i, img_data in enumerate(response_data["data"]):
+                    b64_data = img_data["b64_json"]
+                    
+                    # For multiple images, modify file path with index
+                    variation_file_path = file_path
+                    if file_path and n > 1:
+                        path = Path(file_path)
+                        variation_file_path = str(path.parent / f"{path.stem}_{i+1}{path.suffix}")
+                    
+                    result = await handle_image_output(
+                        b64_data, output_format, output_mode, variation_file_path, temp_dir, ctx
+                    )
+                    results.append(result)
+                
+                return results
         
-        # Use standardized output handling
-        result = await handle_image_output(
-            b64_data, output_format, output_mode, file_path, temp_dir, ctx
-        )
-        
+        # For single image case, result is already set above
         total_time = time.time() - start_time
         if ctx: await ctx.info(f"Total edit_image processing time: {total_time:.2f}s")
         
