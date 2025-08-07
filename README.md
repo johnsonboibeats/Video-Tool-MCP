@@ -17,6 +17,7 @@ A comprehensive Model Context Protocol (MCP) server for image processing tasks, 
 - **Prompt Generation**: Generate optimized prompts from images
 - **Local File Support**: Process files from local file system
 - **Base64 Support**: Handle base64 encoded image data
+- **Google Drive Integration**: Search, upload, and process images directly from Google Drive
 - **OAuth 2.0 Support**: Full OAuth implementation for Claude integration
 
 ## OAuth 2.0 Implementation
@@ -63,6 +64,10 @@ For detailed OAuth documentation, see [OAUTH_IMPLEMENTATION.md](OAUTH_IMPLEMENTA
 - `JWT_SECRET`: Secret key for JWT signing (auto-generated if not provided)
 - `JWT_EXPIRY_HOURS`: Access token expiry in hours (default: 1)
 - `REFRESH_TOKEN_EXPIRY_DAYS`: Refresh token expiry in days (default: 30)
+
+### Google Drive Integration (Optional)
+- `GOOGLE_OAUTH_TOKEN`: OAuth token JSON for Google Drive access
+- `GOOGLE_SERVICE_ACCOUNT_JSON`: Service account credentials JSON for Google Drive access
 
 ## Local Development
 
@@ -184,14 +189,19 @@ The server supports the following input types:
 
 ## Available Tools
 
+### Image Processing
 1. **create_image** - Generate images from text prompts
 2. **analyze_image** - Analyze images with detailed descriptions
 3. **edit_image** - Edit images with text prompts
 4. **generate_variations** - Create variations of existing images
 5. **extract_text** - Extract text from images using OCR
-6. **compare_images** - Compare two images
-7. **batch_process** - Process multiple images
-8. **image_metadata** - Extract image metadata
+6. **batch_process** - Process multiple images
+7. **image_metadata** - Extract image metadata
+
+### Google Drive Integration
+8. **search_images** - Search for image files in Google Drive
+9. **upload_image** - Upload images to Google Drive with metadata
+10. **get_image_from_drive** - Get direct download URLs for Drive images
 
 ## Error Handling
 

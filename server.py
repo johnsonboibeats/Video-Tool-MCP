@@ -72,6 +72,19 @@ except ImportError:
     HTTPX_AVAILABLE = False
     logger.warning("Httpx not available - some image features may be disabled")
 
+# Google Drive imports with graceful fallbacks
+try:
+    from google.auth.transport.requests import Request
+    from google.oauth2.credentials import Credentials
+    from google_auth_oauthlib.flow import Flow
+    from googleapiclient.discovery import build
+    from googleapiclient.errors import HttpError
+    from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
+    GOOGLE_DRIVE_AVAILABLE = True
+except ImportError:
+    GOOGLE_DRIVE_AVAILABLE = False
+    logger.warning("Google Drive libraries not available - Drive integration will be disabled")
+
 # Load environment variables
 load_dotenv()
 
@@ -80,6 +93,7 @@ class AppContext(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     openai_client: Optional[Union[AsyncOpenAI, AsyncAzureOpenAI]] = None
+    drive_service: Any = None
     temp_dir: Path
     http_client: Optional[httpx.AsyncClient] = None
 
@@ -105,6 +119,66 @@ def check_openai_client(client) -> None:
     """Check if OpenAI client is available"""
     if client is None:
         raise ValueError("OpenAI API key not configured. Please set OPENAI_API_KEY environment variable.")
+
+# =============================================================================
+# GOOGLE DRIVE INTEGRATION
+# =============================================================================
+
+# Google Drive constants
+GOOGLE_DRIVE_SCOPES = ['https://www.googleapis.com/auth/drive']
+
+def extract_file_id_from_url(url: str) -> Optional[str]:
+    """Extract Google Drive file ID from various URL formats"""
+    if not url:
+        return None
+        
+    if url.startswith('drive://'):
+        return url[8:]
+    
+    # Handle direct file IDs
+    if len(url) == 33 and url.replace('-', '').replace('_', '').isalnum():
+        return url
+    
+    # Parse Google Drive URLs
+    patterns = [
+        r'drive\.google\.com/file/d/([a-zA-Z0-9_-]+)',
+        r'drive\.google\.com/open\?id=([a-zA-Z0-9_-]+)',
+        r'docs\.google\.com/.*?/d/([a-zA-Z0-9_-]+)',
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, url)
+        if match:
+            return match.group(1)
+    
+    return None
+
+async def authenticate_google_drive() -> Any:
+    """Authenticate with Google Drive using OAuth 2.0"""
+    if not GOOGLE_DRIVE_AVAILABLE:
+        return None
+    
+    try:
+        # Check for OAuth token from environment (Railway-friendly)
+        oauth_token = os.getenv('GOOGLE_OAUTH_TOKEN')
+        if oauth_token:
+            try:
+                token_data = json.loads(oauth_token)
+                creds = Credentials.from_authorized_user_info(token_data, GOOGLE_DRIVE_SCOPES)
+                logger.info("Using OAuth credentials from GOOGLE_OAUTH_TOKEN")
+                
+                # Build and return the service
+                service = build('drive', 'v3', credentials=creds)
+                return service
+            except Exception as e:
+                logger.error(f"Failed to load OAuth token: {e}")
+        
+        logger.warning("No Google Drive OAuth token found - Drive features will be disabled. Please set GOOGLE_OAUTH_TOKEN environment variable.")
+        return None
+        
+    except Exception as e:
+        logger.error(f"Failed to authenticate with Google Drive: {e}")
+        return None
 
 async def handle_file_input(file_input: str, app_context: AppContext) -> str:
     """Handle file input from base64 data or HTTP URLs."""
@@ -187,9 +261,34 @@ def initialize_app_context():
         # Create HTTP client
         http_client = httpx.AsyncClient() if HTTPX_AVAILABLE else None
         
+        # Initialize Google Drive service (synchronous version)
+        drive_service = None
+        if GOOGLE_DRIVE_AVAILABLE:
+            try:
+                # Check for OAuth token from environment (Railway-friendly)
+                oauth_token = os.getenv('GOOGLE_OAUTH_TOKEN')
+                if oauth_token:
+                    try:
+                        token_data = json.loads(oauth_token)
+                        creds = Credentials.from_authorized_user_info(token_data, GOOGLE_DRIVE_SCOPES)
+                        logger.info("Using OAuth credentials from GOOGLE_OAUTH_TOKEN")
+                        drive_service = build('drive', 'v3', credentials=creds)
+                    except Exception as e:
+                        logger.error(f"Failed to load OAuth token: {e}")
+                
+                if drive_service:
+                    logger.info("Google Drive service initialized successfully")
+                else:
+                    logger.warning("No Google Drive OAuth token found - Drive features will be disabled. Please set GOOGLE_OAUTH_TOKEN environment variable.")
+                    
+            except Exception as e:
+                logger.error(f"Failed to initialize Google Drive service: {e}")
+                drive_service = None
+        
         # Create context
         context = AppContext(
             openai_client=client,
+            drive_service=drive_service,
             temp_dir=temp_dir,
             http_client=http_client
         )
@@ -314,6 +413,12 @@ async def health_check(request: Request):
             response_data["openai_configured"] = _global_app_context.openai_client is not None if _global_app_context else False
         except Exception:
             response_data["openai_configured"] = False
+            
+        # Safely check Google Drive configuration
+        try:
+            response_data["google_drive_configured"] = _global_app_context.drive_service is not None if _global_app_context else False
+        except Exception:
+            response_data["google_drive_configured"] = False
             
         logger.info(f"Health check response: {response_data}")
         return JSONResponse(response_data)
@@ -1092,6 +1197,16 @@ async def get_file_path(file_input: str) -> str:
     if file_input.startswith('data:'):
         return await handle_file_input(file_input, app_context)
     
+    # Handle Google Drive URLs by converting to direct download URLs
+    if file_input.startswith('drive://') or 'drive.google.com' in file_input or 'docs.google.com' in file_input:
+        file_id = extract_file_id_from_url(file_input)
+        if file_id:
+            # Convert to direct download URL
+            direct_url = f"https://drive.google.com/uc?export=download&id={file_id}"
+            return await handle_file_input(direct_url, app_context)
+        else:
+            raise ValueError(f"Invalid Google Drive URL: {file_input}")
+    
     # Handle HTTP URLs by downloading to temp file
     if file_input.startswith('http://') or file_input.startswith('https://'):
         return await handle_file_input(file_input, app_context)
@@ -1108,7 +1223,7 @@ async def get_file_path(file_input: str) -> str:
             raise ValueError(f"Cannot access local file path '{file_input}' in remote mode. Please provide a public URL or base64-encoded image.")
 
     # If we get here, it's an invalid input
-    raise ValueError("Invalid file path: must be an absolute path, base64 data, or HTTP URL")
+    raise ValueError("Invalid file path: must be an absolute path, base64 data, HTTP URL, or Google Drive URL (drive://, drive.google.com, docs.google.com)")
 
 # =============================================================================
 # IMAGE PROCESSING TOOLS
@@ -1567,16 +1682,16 @@ async def extract_text(
 @mcp.tool()
 async def batch_process(
     images: List[str],
-    operation: Literal["extract_text", "transform", "resize"],
+    operation: Literal["extract_text", "analyze_image", "image_metadata"],
     operation_params: Dict[str, Any],
     ctx: Context = None
 ) -> Dict[str, Any]:
     """Process multiple images with the same operation.
     
-    Supports local files and base64 data.
+    Supports local files, base64 data, and Google Drive URLs.
     
     Args:
-        images: List of images (file paths or base64)
+        images: List of images (file paths, base64 data, or Google Drive URLs)
         operation: Operation to perform on all images
         operation_params: Parameters for the operation
         
@@ -1593,10 +1708,10 @@ async def batch_process(
         try:
             if operation == "extract_text":
                 result = await extract_text(image, **operation_params)
-            elif operation == "transform":
-                result = await transform_image(image, **operation_params)
-            elif operation == "resize":
-                result = await transform_image(image, operation="resize", **operation_params)
+            elif operation == "analyze_image":
+                result = await analyze_image(image, **operation_params)
+            elif operation == "image_metadata":
+                result = await image_metadata(image, **operation_params)
             else:
                 raise ValueError(f"Unsupported operation: {operation}")
                 
@@ -1752,6 +1867,666 @@ async def analyze_image(
         error_msg = f"Failed to analyze image: {str(e)}"
         if ctx: await ctx.error(error_msg)
         raise ValueError(error_msg)
+
+
+# =============================================================================
+# GOOGLE DRIVE TOOLS FOR IMAGES
+# =============================================================================
+
+@mcp.tool()
+async def search_images(
+    query: str = "",
+    folder_id: Optional[str] = None,
+    max_results: int = 50,
+    ctx: Context = None
+) -> Dict[str, Any]:
+    """
+    Search for image files in Google Drive.
+    
+    Args:
+        query: Search query (e.g., "vacation photos", "name contains 'screenshot'")
+        folder_id: Optional folder to search within
+        max_results: Maximum number of results (1-1000)
+        
+    Returns:
+        List of image files with download URLs and metadata
+    """
+    try:
+        app_context = get_app_context()
+        drive_service = app_context.drive_service
+        
+        if not drive_service:
+            return {"error": "Google Drive not configured. Please set GOOGLE_OAUTH_TOKEN or GOOGLE_SERVICE_ACCOUNT_JSON", "success": False}
+        
+        if ctx:
+            await ctx.info(f"Searching for images: {query}")
+        
+        # Build search query for images
+        q_parts = ["trashed=false", "mimeType contains 'image/'"]
+        
+        if query:
+            q_parts.append(f"name contains '{query}'")
+        
+        if folder_id:
+            q_parts.append(f"'{folder_id}' in parents")
+        
+        q = " and ".join(q_parts)
+        
+        results = drive_service.files().list(
+            q=q,
+            pageSize=min(max_results, 1000),
+            fields="nextPageToken, files(id, name, mimeType, size, createdTime, modifiedTime, webViewLink, thumbnailLink)"
+        ).execute()
+        
+        items = results.get('files', [])
+        
+        # Convert to direct download URLs
+        processed_items = []
+        for item in items:
+            file_id = item['id']
+            direct_url = f"https://drive.google.com/uc?export=download&id={file_id}"
+            
+            processed_items.append({
+                "id": file_id,
+                "name": item['name'],
+                "mime_type": item['mimeType'],
+                "size": int(item.get('size', 0)),
+                "created_time": item['createdTime'],
+                "modified_time": item['modifiedTime'],
+                "web_view_link": item.get('webViewLink', ''),
+                "thumbnail_link": item.get('thumbnailLink', ''),
+                "direct_download_url": direct_url,
+                "drive_url": f"drive://{file_id}"  # For use with other tools
+            })
+        
+        return {
+            "success": True,
+            "query": query,
+            "total_results": len(processed_items),
+            "images": processed_items
+        }
+        
+    except Exception as e:
+        error_msg = f"Error searching images: {str(e)}"
+        if ctx: await ctx.error(error_msg)
+        logger.error(error_msg)
+        return {"error": error_msg, "success": False}
+
+@mcp.tool()
+async def upload_image(
+    image_path: Optional[str] = None,
+    image_data: Optional[str] = None,
+    image_url: Optional[str] = None,
+    filename: Optional[str] = None,
+    folder_id: Optional[str] = None,
+    description: Optional[str] = None,
+    ctx: Context = None
+) -> Dict[str, Any]:
+    """
+    Upload an image to Google Drive.
+    
+    Args:
+        image_path: Local image path (for local files)
+        image_data: Base64 encoded image data (for generated images)
+        image_url: HTTP URL to image (for remote images)
+        filename: Name for the uploaded file
+        folder_id: Google Drive folder ID (default: root)
+        description: Optional description for the image
+        
+    Returns:
+        Upload result with file ID and metadata
+    """
+    try:
+        app_context = get_app_context()
+        drive_service = app_context.drive_service
+        
+        if not drive_service:
+            return {"error": "Google Drive not configured. Please set GOOGLE_OAUTH_TOKEN or GOOGLE_SERVICE_ACCOUNT_JSON", "success": False}
+        
+        # Validate input - exactly one source must be provided
+        input_count = sum(bool(x) for x in [image_path, image_data, image_url])
+        if input_count != 1:
+            return {"error": "Exactly one of image_path, image_data, or image_url must be provided", "success": False}
+        
+        # Handle different input types
+        temp_file_path = None
+        actual_filename = None
+        
+        if image_path:
+            # Local file path mode
+            file_path = await get_file_path(image_path)
+            actual_filename = filename or Path(file_path).name
+            temp_file_path = file_path
+            
+            if ctx:
+                await ctx.info(f"Uploading local image: {image_path}")
+                
+        elif image_data:
+            # Base64 data mode
+            if not filename:
+                return {"error": "filename is required when using image_data", "success": False}
+            
+            try:
+                # Handle data URLs
+                if image_data.startswith('data:'):
+                    header, data = image_data.split(',', 1)
+                    file_bytes = base64.b64decode(data)
+                    
+                    # Extract MIME type for extension
+                    mime_match = re.search(r'data:([^;]+)', header)
+                    if mime_match and not filename.endswith(('.png', '.jpg', '.jpeg', '.webp', '.gif')):
+                        mime_type = mime_match.group(1)
+                        extension = mimetypes.guess_extension(mime_type) or '.png'
+                        if not filename.endswith(extension):
+                            filename = f"{filename}{extension}"
+                else:
+                    # Raw base64
+                    file_bytes = base64.b64decode(image_data)
+                    if not filename.endswith(('.png', '.jpg', '.jpeg', '.webp', '.gif')):
+                        filename = f"{filename}.png"
+                
+                # Create temporary file
+                actual_filename = filename
+                safe_filename = re.sub(r'[^\w\-_.]', '_', actual_filename)
+                temp_file_path = app_context.temp_dir / f"upload_{secrets.token_urlsafe(8)}_{safe_filename}"
+                
+                # Write decoded data to temp file
+                async with aiofiles.open(temp_file_path, 'wb') as f:
+                    await f.write(file_bytes)
+                
+                if ctx:
+                    await ctx.info(f"Created temp file from base64 data: {temp_file_path}")
+                    
+            except Exception as e:
+                return {"error": f"Failed to decode base64 data: {str(e)}", "success": False}
+                
+        elif image_url:
+            # URL fetch mode
+            if not filename:
+                return {"error": "filename is required when using image_url", "success": False}
+            
+            if not app_context.http_client:
+                return {"error": "HTTP client not available for URL fetching", "success": False}
+            
+            try:
+                # Fetch image from URL
+                response = await app_context.http_client.get(image_url)
+                response.raise_for_status()
+                
+                # Create temporary file
+                actual_filename = filename
+                safe_filename = re.sub(r'[^\w\-_.]', '_', actual_filename)
+                temp_file_path = app_context.temp_dir / f"url_{secrets.token_urlsafe(8)}_{safe_filename}"
+                
+                # Write fetched data to temp file
+                async with aiofiles.open(temp_file_path, 'wb') as f:
+                    await f.write(response.content)
+                
+                if ctx:
+                    await ctx.info(f"Downloaded image from URL: {image_url}")
+                    
+            except Exception as e:
+                return {"error": f"Failed to fetch image from URL: {str(e)}", "success": False}
+        
+        # Determine mime type
+        mime_type, _ = mimetypes.guess_type(actual_filename)
+        if not mime_type or not mime_type.startswith('image/'):
+            mime_type = 'image/png'  # Default for images
+        
+        # Prepare file metadata
+        file_metadata = {
+            'name': actual_filename,
+            'description': description or f"Image uploaded via Image-Tool-MCP Server"
+        }
+        
+        # Set parent folder if specified
+        if folder_id and folder_id != "root":
+            file_metadata['parents'] = [folder_id]
+        
+        # Create media upload object
+        media = MediaFileUpload(
+            str(temp_file_path),
+            mimetype=mime_type,
+            resumable=True
+        )
+        
+        # Upload file
+        request = drive_service.files().create(
+            body=file_metadata,
+            media_body=media,
+            fields='id, name, mimeType, size, createdTime, webViewLink'
+        )
+        
+        # Execute upload with progress tracking
+        response = None
+        while response is None:
+            status, response = request.next_chunk()
+            if ctx and status:
+                await ctx.report_progress(int(status.progress() * 100), 100)
+        
+        if ctx:
+            await ctx.info(f"Upload completed: {response['name']}")
+        
+        # Generate direct download URL
+        file_id = response['id']
+        direct_url = f"https://drive.google.com/uc?export=download&id={file_id}"
+        
+        return {
+            "success": True,
+            "file_id": file_id,
+            "name": response['name'],
+            "mime_type": response['mimeType'],
+            "size": int(response.get('size', 0)),
+            "created_time": response['createdTime'],
+            "web_view_link": response['webViewLink'],
+            "direct_download_url": direct_url,
+            "drive_url": f"drive://{file_id}",
+            "folder_id": folder_id or "root"
+        }
+        
+    except Exception as e:
+        error_msg = f"Error uploading image: {str(e)}"
+        if ctx: await ctx.error(error_msg)
+        logger.error(error_msg)
+        return {"error": error_msg, "success": False}
+
+@mcp.tool()
+async def get_image_from_drive(
+    file_id_or_url: str,
+    ctx: Context = None
+) -> Dict[str, Any]:
+    """
+    Get direct download URL for an image in Google Drive.
+    
+    Args:
+        file_id_or_url: Google Drive file ID, share URL, or drive:// URL
+        
+    Returns:
+        Direct download URL and image metadata
+    """
+    try:
+        app_context = get_app_context()
+        drive_service = app_context.drive_service
+        
+        if not drive_service:
+            return {"error": "Google Drive not configured. Please set GOOGLE_OAUTH_TOKEN or GOOGLE_SERVICE_ACCOUNT_JSON", "success": False}
+        
+        # Extract file ID from various URL formats
+        file_id = extract_file_id_from_url(file_id_or_url)
+        if not file_id:
+            file_id = file_id_or_url  # Assume it's a direct file ID
+        
+        if ctx:
+            await ctx.info(f"Getting image info for: {file_id}")
+        
+        # Get file metadata
+        file_metadata = drive_service.files().get(
+            fileId=file_id,
+            fields="id, name, mimeType, size, createdTime, modifiedTime, webViewLink, thumbnailLink"
+        ).execute()
+        
+        # Verify it's an image
+        mime_type = file_metadata['mimeType']
+        if not mime_type.startswith('image/'):
+            return {"error": f"File is not an image (MIME type: {mime_type})", "success": False}
+        
+        # Generate direct download URL
+        direct_url = f"https://drive.google.com/uc?export=download&id={file_id}"
+        
+        return {
+            "success": True,
+            "file_id": file_id,
+            "name": file_metadata['name'],
+            "mime_type": mime_type,
+            "size": int(file_metadata.get('size', 0)),
+            "created_time": file_metadata['createdTime'],
+            "modified_time": file_metadata['modifiedTime'],
+            "web_view_link": file_metadata.get('webViewLink', ''),
+            "thumbnail_link": file_metadata.get('thumbnailLink', ''),
+            "direct_download_url": direct_url,
+            "drive_url": f"drive://{file_id}"
+        }
+        
+    except Exception as e:
+        error_msg = f"Error getting image from Drive: {str(e)}"
+        if ctx: await ctx.error(error_msg)
+        logger.error(error_msg)
+        return {"error": error_msg, "success": False}
+
+# =============================================================================
+# GOOGLE DRIVE TOOLS FOR IMAGES
+# =============================================================================
+
+@mcp.tool()
+async def search_images(
+    query: str = "",
+    folder_id: Optional[str] = None,
+    max_results: int = 50,
+    ctx: Context = None
+) -> Dict[str, Any]:
+    """
+    Search for image files in Google Drive.
+    
+    Args:
+        query: Search query (e.g., "vacation photos", "name contains 'screenshot'")
+        folder_id: Optional folder to search within
+        max_results: Maximum number of results (1-1000)
+        
+    Returns:
+        List of image files with download URLs and metadata
+    """
+    try:
+        app_context = get_app_context()
+        drive_service = app_context.drive_service
+        
+        if not drive_service:
+            return {"error": "Google Drive not configured. Please set GOOGLE_OAUTH_TOKEN environment variable", "success": False}
+        
+        if ctx:
+            await ctx.info(f"Searching for images: {query}")
+        
+        # Build search query for images
+        q_parts = [
+            "trashed=false",
+            "(mimeType contains 'image/')"
+        ]
+        
+        if query:
+            q_parts.append(f"name contains '{query}'")
+        
+        if folder_id:
+            q_parts.append(f"'{folder_id}' in parents")
+        
+        q = " and ".join(q_parts)
+        
+        results = drive_service.files().list(
+            q=q,
+            pageSize=min(max_results, 1000),
+            fields="nextPageToken, files(id, name, mimeType, size, createdTime, modifiedTime, webViewLink)"
+        ).execute()
+        
+        items = results.get('files', [])
+        
+        # Convert to direct download URLs
+        processed_items = []
+        for item in items:
+            file_id = item['id']
+            direct_url = f"https://drive.google.com/uc?export=download&id={file_id}"
+            
+            processed_items.append({
+                "id": file_id,
+                "name": item['name'],
+                "mime_type": item['mimeType'],
+                "size": int(item.get('size', 0)),
+                "created_time": item['createdTime'],
+                "modified_time": item['modifiedTime'],
+                "web_view_link": item.get('webViewLink', ''),
+                "direct_download_url": direct_url,
+                "drive_url": f"drive://{file_id}"  # For use with other tools
+            })
+        
+        return {
+            "success": True,
+            "query": query,
+            "total_results": len(processed_items),
+            "images": processed_items
+        }
+        
+    except Exception as e:
+        error_msg = f"Error searching images: {str(e)}"
+        if ctx: await ctx.error(error_msg)
+        logger.error(error_msg)
+        return {"error": error_msg, "success": False}
+
+@mcp.tool()
+async def upload_image(
+    image_path: Optional[str] = None,
+    image_data: Optional[str] = None,
+    image_url: Optional[str] = None,
+    filename: Optional[str] = None,
+    folder_id: Optional[str] = None,
+    description: Optional[str] = None,
+    ctx: Context = None
+) -> Dict[str, Any]:
+    """
+    Upload an image to Google Drive.
+    
+    Args:
+        image_path: Local image path (for local files)
+        image_data: Base64 encoded image data (for generated images)
+        image_url: HTTP URL to image (for remote images)
+        filename: Name for the uploaded file
+        folder_id: Google Drive folder ID (default: root)
+        description: Optional description for the image
+        
+    Returns:
+        Upload result with file ID and metadata
+    """
+    try:
+        app_context = get_app_context()
+        drive_service = app_context.drive_service
+        
+        if not drive_service:
+            return {"error": "Google Drive not configured. Please set GOOGLE_OAUTH_TOKEN environment variable", "success": False}
+        
+        # Validate input - exactly one source must be provided
+        input_count = sum(bool(x) for x in [image_path, image_data, image_url])
+        if input_count != 1:
+            return {"error": "Exactly one of image_path, image_data, or image_url must be provided", "success": False}
+        
+        # Handle different input types
+        temp_file_path = None
+        actual_filename = None
+        
+        if image_path:
+            # Local file path mode
+            file_path = await get_file_path(image_path, app_context)
+            actual_filename = filename or Path(file_path).name
+            temp_file_path = file_path
+            
+            if ctx:
+                await ctx.info(f"Uploading local image: {image_path}")
+                
+        elif image_data:
+            # Base64 data mode
+            if not filename:
+                return {"error": "filename is required when using image_data", "success": False}
+            
+            try:
+                # Handle data URLs
+                if image_data.startswith('data:'):
+                    header, data = image_data.split(',', 1)
+                    file_bytes = base64.b64decode(data)
+                    
+                    # Extract MIME type for extension
+                    mime_match = re.search(r'data:([^;]+)', header)
+                    if mime_match and not filename.endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp')):
+                        mime_type = mime_match.group(1)
+                        extension = mimetypes.guess_extension(mime_type) or '.png'
+                        if not filename.endswith(extension):
+                            filename = f"{filename}{extension}"
+                else:
+                    # Raw base64
+                    file_bytes = base64.b64decode(image_data)
+                    if not filename.endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp')):
+                        filename = f"{filename}.png"
+                
+                # Create temporary file
+                actual_filename = filename
+                safe_filename = re.sub(r'[^\w\-_.]', '_', actual_filename)
+                temp_file_path = app_context.temp_dir / f"upload_{secrets.token_urlsafe(8)}_{safe_filename}"
+                
+                # Write decoded data to temp file
+                async with aiofiles.open(temp_file_path, 'wb') as f:
+                    await f.write(file_bytes)
+                
+                if ctx:
+                    await ctx.info(f"Created temp file from base64 data: {temp_file_path}")
+                    
+            except Exception as e:
+                return {"error": f"Failed to decode base64 data: {str(e)}", "success": False}
+                
+        elif image_url:
+            # URL fetch mode
+            if not filename:
+                return {"error": "filename is required when using image_url", "success": False}
+            
+            if not app_context.http_client:
+                return {"error": "HTTP client not available for URL fetching", "success": False}
+            
+            try:
+                # Fetch image from URL
+                response = await app_context.http_client.get(image_url)
+                response.raise_for_status()
+                
+                # Create temporary file
+                actual_filename = filename
+                safe_filename = re.sub(r'[^\w\-_.]', '_', actual_filename)
+                temp_file_path = app_context.temp_dir / f"url_{secrets.token_urlsafe(8)}_{safe_filename}"
+                
+                # Write fetched data to temp file
+                async with aiofiles.open(temp_file_path, 'wb') as f:
+                    await f.write(response.content)
+                
+                if ctx:
+                    await ctx.info(f"Downloaded image from URL: {image_url}")
+                    
+            except Exception as e:
+                return {"error": f"Failed to fetch image from URL: {str(e)}", "success": False}
+        
+        # Determine mime type
+        mime_type, _ = mimetypes.guess_type(actual_filename)
+        if not mime_type or not mime_type.startswith('image/'):
+            # Default based on extension
+            ext = Path(actual_filename).suffix.lower()
+            mime_map = {
+                '.png': 'image/png',
+                '.jpg': 'image/jpeg',
+                '.jpeg': 'image/jpeg',
+                '.gif': 'image/gif',
+                '.webp': 'image/webp',
+                '.bmp': 'image/bmp'
+            }
+            mime_type = mime_map.get(ext, 'image/png')  # Default to PNG
+        
+        # Prepare file metadata
+        file_metadata = {
+            'name': actual_filename,
+            'description': description or f"Image uploaded via Image-Tool-MCP Server"
+        }
+        
+        # Set parent folder if specified
+        if folder_id and folder_id != "root":
+            file_metadata['parents'] = [folder_id]
+        
+        # Create media upload object
+        media = MediaFileUpload(
+            str(temp_file_path),
+            mimetype=mime_type,
+            resumable=True
+        )
+        
+        # Upload file
+        request = drive_service.files().create(
+            body=file_metadata,
+            media_body=media,
+            fields='id, name, mimeType, size, createdTime, webViewLink'
+        )
+        
+        # Execute upload with progress tracking
+        response = None
+        while response is None:
+            status, response = request.next_chunk()
+            if ctx and status:
+                await ctx.report_progress(int(status.progress() * 100), 100)
+        
+        if ctx:
+            await ctx.info(f"Upload completed: {response['name']}")
+        
+        # Generate direct download URL
+        file_id = response['id']
+        direct_url = f"https://drive.google.com/uc?export=download&id={file_id}"
+        
+        return {
+            "success": True,
+            "file_id": file_id,
+            "name": response['name'],
+            "mime_type": response['mimeType'],
+            "size": int(response.get('size', 0)),
+            "created_time": response['createdTime'],
+            "web_view_link": response['webViewLink'],
+            "direct_download_url": direct_url,
+            "drive_url": f"drive://{file_id}",
+            "folder_id": folder_id or "root"
+        }
+        
+    except Exception as e:
+        error_msg = f"Error uploading image: {str(e)}"
+        if ctx: await ctx.error(error_msg)
+        logger.error(error_msg)
+        return {"error": error_msg, "success": False}
+
+@mcp.tool()
+async def get_image_from_drive(
+    file_id_or_url: str,
+    ctx: Context = None
+) -> Dict[str, Any]:
+    """
+    Get direct download URL for an image in Google Drive.
+    
+    Args:
+        file_id_or_url: Google Drive file ID, share URL, or drive:// URL
+        
+    Returns:
+        Direct download URL and image metadata
+    """
+    try:
+        app_context = get_app_context()
+        drive_service = app_context.drive_service
+        
+        if not drive_service:
+            return {"error": "Google Drive not configured. Please set GOOGLE_OAUTH_TOKEN environment variable", "success": False}
+        
+        # Extract file ID from various URL formats
+        file_id = extract_file_id_from_url(file_id_or_url)
+        if not file_id:
+            file_id = file_id_or_url  # Assume it's a direct file ID
+        
+        if ctx:
+            await ctx.info(f"Getting image info for: {file_id}")
+        
+        # Get file metadata
+        file_metadata = drive_service.files().get(
+            fileId=file_id,
+            fields="id, name, mimeType, size, createdTime, modifiedTime, webViewLink"
+        ).execute()
+        
+        # Verify it's an image
+        mime_type = file_metadata['mimeType']
+        if not mime_type.startswith('image/'):
+            return {"error": f"File is not an image (MIME type: {mime_type})", "success": False}
+        
+        # Generate direct download URL
+        direct_url = f"https://drive.google.com/uc?export=download&id={file_id}"
+        
+        return {
+            "success": True,
+            "file_id": file_id,
+            "name": file_metadata['name'],
+            "mime_type": mime_type,
+            "size": int(file_metadata.get('size', 0)),
+            "created_time": file_metadata['createdTime'],
+            "modified_time": file_metadata['modifiedTime'],
+            "web_view_link": file_metadata.get('webViewLink', ''),
+            "direct_download_url": direct_url,
+            "drive_url": f"drive://{file_id}"
+        }
+        
+    except Exception as e:
+        error_msg = f"Error getting image from Drive: {str(e)}"
+        if ctx: await ctx.error(error_msg)
+        logger.error(error_msg)
+        return {"error": error_msg, "success": False}
 
 
 # =============================================================================
