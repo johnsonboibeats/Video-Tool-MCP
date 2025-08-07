@@ -143,6 +143,7 @@ def extract_file_id_from_url(url: str) -> Optional[str]:
     patterns = [
         r'drive\.google\.com/file/d/([a-zA-Z0-9_-]+)',
         r'drive\.google\.com/open\?id=([a-zA-Z0-9_-]+)',
+        r'drive\.google\.com/uc\?export=download&id=([a-zA-Z0-9_-]+)',
         r'docs\.google\.com/.*?/d/([a-zA-Z0-9_-]+)',
     ]
     
@@ -211,8 +212,14 @@ async def handle_file_input(file_input: str, app_context: AppContext) -> str:
             if not app_context.http_client:
                 raise ValueError("HTTP client not available for downloading URLs")
             
+            logger.info(f"Downloading file from URL: {file_input}")
             response = await app_context.http_client.get(file_input)
+            logger.info(f"HTTP response status: {response.status_code}, headers: {dict(response.headers)}")
             response.raise_for_status()
+            
+            # Check if we got actual content
+            if len(response.content) == 0:
+                raise ValueError("Downloaded file is empty")
             
             # Determine file extension from Content-Type or URL
             content_type = response.headers.get('content-type', '')
@@ -222,14 +229,36 @@ async def handle_file_input(file_input: str, app_context: AppContext) -> str:
                 # Extract extension from URL
                 extension = Path(file_input).suffix or '.bin'
             
+            # Ensure we use image extensions for image content
+            if 'image' in content_type and extension == '.bin':
+                if 'png' in content_type:
+                    extension = '.png'
+                elif 'jpeg' in content_type or 'jpg' in content_type:
+                    extension = '.jpg'
+                elif 'webp' in content_type:
+                    extension = '.webp'
+                elif 'gif' in content_type:
+                    extension = '.gif'
+            
             temp_path = app_context.temp_dir / f"temp_download_{int(time.time())}{extension}"
             
             async with aiofiles.open(temp_path, 'wb') as f:
                 await f.write(response.content)
             
+            logger.info(f"Successfully downloaded file to: {temp_path}, size: {len(response.content)} bytes")
             return str(temp_path)
         except Exception as e:
-            raise ValueError(f"Failed to download file from URL: {e}")
+            if HTTPX_AVAILABLE:
+                import httpx
+                if isinstance(e, httpx.HTTPStatusError):
+                    raise ValueError(f"HTTP error downloading file: {e.response.status_code} {e.response.reason_phrase} for URL: {file_input}")
+                elif isinstance(e, httpx.RequestError):
+                    raise ValueError(f"Network error downloading file: {e} for URL: {file_input}")
+            
+            # Generic error handling
+            error_details = f"Failed to download file from URL: {e}"
+            logger.error(f"Download error for {file_input}: {e}")
+            raise ValueError(error_details)
     
     # This function should not be called with other input types.
     # The get_file_path function is responsible for routing.
@@ -258,8 +287,11 @@ def initialize_app_context():
         temp_dir.mkdir(parents=True, exist_ok=True)
         logger.info(f"Temporary directory: {temp_dir}")
         
-        # Create HTTP client
-        http_client = httpx.AsyncClient() if HTTPX_AVAILABLE else None
+        # Create HTTP client with redirect following and timeout
+        http_client = httpx.AsyncClient(
+            follow_redirects=True,
+            timeout=30.0
+        ) if HTTPX_AVAILABLE else None
         
         # Initialize Google Drive service (synchronous version)
         drive_service = None
@@ -1148,9 +1180,26 @@ async def save_base64_image(base64_data: str, file_path: Path, format: str = "PN
     async with aiofiles.open(file_path, "wb") as f:
         await f.write(image_data)
 
+async def validate_image_file(file_path: Union[str, Path]) -> bool:
+    """Validate that the file is a valid image"""
+    if not PIL_AVAILABLE:
+        return True  # Skip validation if PIL not available
+    
+    try:
+        with PILImage.open(file_path) as img:
+            img.verify()  # Verify it's a valid image
+        return True
+    except Exception as e:
+        logger.warning(f"Invalid image file {file_path}: {e}")
+        return False
+
 async def load_image_as_base64(file_path: Union[str, Path]) -> tuple[str, str]:
     """Load image file and return as base64 with mime type"""
     file_path = Path(file_path)
+    
+    # Validate the image file if PIL is available
+    if PIL_AVAILABLE and not await validate_image_file(file_path):
+        raise ValueError(f"Invalid or corrupted image file: {file_path}")
     
     async with aiofiles.open(file_path, "rb") as f:
         image_data = await f.read()
@@ -1201,9 +1250,24 @@ async def get_file_path(file_input: str) -> str:
     if file_input.startswith('drive://') or 'drive.google.com' in file_input or 'docs.google.com' in file_input:
         file_id = extract_file_id_from_url(file_input)
         if file_id:
-            # Convert to direct download URL
-            direct_url = f"https://drive.google.com/uc?export=download&id={file_id}"
-            return await handle_file_input(direct_url, app_context)
+            # Try multiple Google Drive download URL formats
+            download_urls = [
+                f"https://drive.usercontent.google.com/download?id={file_id}&export=download",
+                f"https://drive.google.com/uc?export=download&id={file_id}",
+                f"https://drive.google.com/file/d/{file_id}/view?usp=sharing"
+            ]
+            
+            # Try each URL format until one works
+            last_error = None
+            for url in download_urls:
+                try:
+                    return await handle_file_input(url, app_context)
+                except Exception as e:
+                    last_error = e
+                    continue
+            
+            # If all URLs failed, raise the last error
+            raise ValueError(f"Failed to download from Google Drive (ID: {file_id}). Last error: {last_error}")
         else:
             raise ValueError(f"Invalid Google Drive URL: {file_input}")
     
@@ -1589,8 +1653,13 @@ async def generate_variations(
     }
     
     try:
-        if ctx: await ctx.info(f"Generating {n} variation(s)...")
+        if ctx: await ctx.info(f"Generating {n} variation(s) from image: {image[:100]}...")
+        if ctx: await ctx.info(f"Image file path resolved to: {image_path}")
+        if ctx: await ctx.info(f"Image size: {len(image_bytes)} bytes")
+        
         response = await client.images.create_variation(**params)
+        
+        if ctx: await ctx.info(f"Successfully generated {len(response.data)} variations")
         
         # Process results using standardized output handling
         results = []
@@ -1611,7 +1680,10 @@ async def generate_variations(
         return results if n > 1 else results[0]
         
     except Exception as e:
-        raise ValueError(f"Failed to generate variations: {str(e)}")
+        error_msg = f"Failed to generate variations: {str(e)}"
+        if ctx: await ctx.error(error_msg)
+        logger.error(f"generate_variations error: {e}")
+        raise ValueError(error_msg)
 
 @mcp.tool()
 async def extract_text(
