@@ -451,14 +451,7 @@ def initialize_app_context():
         except Exception as e:
             logger.warning(f"Temp cleanup failed: {e}")
 
-        # Start periodic cleanup task (best-effort)
-        global _cleanup_task_started
-        if not _cleanup_task_started:
-            try:
-                asyncio.get_event_loop().create_task(_periodic_cleanup_loop())
-                _cleanup_task_started = True
-            except Exception:
-                pass
+        # Periodic cleanup task will be started on first health or metrics request
 
         return context
         
@@ -585,6 +578,14 @@ async def health_check(request: Request):
             response_data["google_drive_configured"] = False
             
         logger.info(f"Health check response: {response_data}")
+        # Lazy-start periodic cleanup loop after server has an event loop
+        global _cleanup_task_started
+        if not _cleanup_task_started:
+            try:
+                asyncio.create_task(_periodic_cleanup_loop())
+                _cleanup_task_started = True
+            except Exception:
+                pass
         return JSONResponse(response_data)
     except Exception as e:
         logger.error(f"Health check error: {e}")
@@ -593,6 +594,14 @@ async def health_check(request: Request):
 @mcp.custom_route("/metrics", methods=["GET"])
 async def metrics_endpoint(request: Request):
     """Return simple internal metrics counters."""
+    # Lazy-start periodic cleanup loop
+    global _cleanup_task_started
+    if not _cleanup_task_started:
+        try:
+            asyncio.create_task(_periodic_cleanup_loop())
+            _cleanup_task_started = True
+        except Exception:
+            pass
     return JSONResponse(METRICS)
 
 @mcp.custom_route("/", methods=["GET"])
