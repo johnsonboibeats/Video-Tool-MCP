@@ -367,8 +367,10 @@ def initialize_app_context():
         # Create tuned HTTP client with connection limits and keep-alive
         http_client = None
         if HTTPX_AVAILABLE:
-            limits = httpx.Limits(max_connections=int(os.getenv("HTTP_MAX_CONNECTIONS", "50")),
-                                   max_keepalive=int(os.getenv("HTTP_MAX_KEEPALIVE", "20")))
+            limits = httpx.Limits(
+                max_connections=int(os.getenv("HTTP_MAX_CONNECTIONS", "50")),
+                max_keepalive_connections=int(os.getenv("HTTP_MAX_KEEPALIVE", "20"))
+            )
             http_client = httpx.AsyncClient(
                 follow_redirects=True,
                 timeout=httpx.Timeout(30.0, connect=10.0),
