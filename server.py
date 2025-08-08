@@ -1856,13 +1856,32 @@ async def generate_variations(
     if n < 1 or n > 10:
         raise ValueError("Number of variations must be between 1 and 10")
     
-    image_path = await get_file_path(image)
-    image_base64, _ = await load_image_as_base64(image_path)
+    # Fast path for Google Drive inputs (no temp files)
+    drive_fast_path_used = False
+    if isinstance(image, str) and (
+        image.startswith('drive://') or 'drive.google.com' in image or 'docs.google.com' in image
+    ):
+        file_id = extract_file_id_from_url(image)
+        if file_id:
+            try:
+                app_ctx = get_app_context()
+                if app_ctx.drive_service:
+                    b64, _mime = await load_image_from_drive(file_id)
+                    image_bytes = base64.b64decode(b64)
+                    image_file = io.BytesIO(image_bytes)
+                    image_file.name = "image.png"
+                    drive_fast_path_used = True
+                else:
+                    drive_fast_path_used = False
+            except Exception:
+                drive_fast_path_used = False
     
-    # Prepare image for API (OpenAI client expects file objects, not base64 strings)
-    image_bytes = base64.b64decode(image_base64)
-    image_file = io.BytesIO(image_bytes)
-    image_file.name = "image.png"  # Required for OpenAI client
+    if not drive_fast_path_used:
+        image_path = await get_file_path(image)
+        image_base64, _ = await load_image_as_base64(image_path)
+        image_bytes = base64.b64decode(image_base64)
+        image_file = io.BytesIO(image_bytes)
+        image_file.name = "image.png"
     
     params = {
         "model": model,
@@ -1872,9 +1891,11 @@ async def generate_variations(
     }
     
     try:
-        if ctx: await ctx.info(f"Generating {n} variation(s) from image: {image[:100]}...")
-        if ctx: await ctx.info(f"Image file path resolved to: {image_path}")
-        if ctx: await ctx.info(f"Image size: {len(image_bytes)} bytes")
+        if ctx: await ctx.info(f"Generating {n} variation(s) from image input...")
+        if ctx and drive_fast_path_used:
+            await ctx.info("Using Google Drive fast path (no temp files)")
+        if ctx:
+            await ctx.info(f"Image size: {len(image_bytes)} bytes")
         
         response = await client.images.create_variation(**params)
         
@@ -2122,12 +2143,28 @@ async def analyze_image(
     try:
         if ctx: await ctx.info(f"Analyzing image with model {model}...")
         
-        # Get file path (handles local files, URLs, and base64)
-        file_path = await get_file_path(image)
+        # Fast path for Google Drive inputs: avoid temp files
+        image_url: Optional[str] = None
+        if isinstance(image, str) and (
+            image.startswith('drive://') or 'drive.google.com' in image or 'docs.google.com' in image
+        ):
+            file_id = extract_file_id_from_url(image)
+            if file_id:
+                try:
+                    app_ctx = get_app_context()
+                    if app_ctx.drive_service:
+                        base64_data, mime_type = await load_image_from_drive(file_id)
+                        image_url = f"data:{mime_type};base64,{base64_data}"
+                        if ctx:
+                            await ctx.info("Using Google Drive fast path (no temp files)")
+                except Exception:
+                    image_url = None
         
-        # Load image file as base64
-        base64_data, mime_type = await load_image_as_base64(file_path)
-        image_url = f"data:{mime_type};base64,{base64_data}"
+        if image_url is None:
+            # Fallback: resolve to file path then load as base64
+            file_path = await get_file_path(image)
+            base64_data, mime_type = await load_image_as_base64(file_path)
+            image_url = f"data:{mime_type};base64,{base64_data}"
         
         # Call Vision API
         response = await client.chat.completions.create(
