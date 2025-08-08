@@ -444,10 +444,9 @@ def initialize_app_context():
         global _global_app_context
         _global_app_context = context
         
-        # Cleanup download temp dir
+        # Cleanup temp dir (synchronous, safe at startup)
         try:
-            await_cleanup = False  # sync context init; call sync cleaner
-            cleanup_old_downloads(temp_dir, max_age_hours=24, max_total_size_mb=200)
+            cleanup_temp_dir(temp_dir, max_age_hours=24, max_total_size_mb=200)
         except Exception as e:
             logger.warning(f"Temp cleanup failed: {e}")
 
@@ -1278,7 +1277,7 @@ async def handle_image_output(
         download_path.parent.mkdir(exist_ok=True)
         
         # Clean up old files before saving new one
-        await cleanup_old_downloads(temp_dir, max_age_hours=24, max_total_size_mb=100)
+        cleanup_temp_dir(temp_dir, max_age_hours=24, max_total_size_mb=100)
         
         await save_base64_image(b64_data, download_path, output_format.upper())
         
@@ -1287,62 +1286,40 @@ async def handle_image_output(
         if ctx: await ctx.info(f"Full-size image available at: {download_url}")
         return f"Image generated successfully! Download URL: {download_url}"
 
-async def cleanup_old_downloads(temp_dir: Path, max_age_hours: int = 24, max_total_size_mb: int = 100) -> None:
-    """Clean up old download files to prevent disk space issues"""
+def cleanup_downloads_dir(temp_dir: Path, max_age_hours: int = 24, max_total_size_mb: int = 100) -> None:
+    """Specialized cleanup for the downloads subdir; kept for parity with logs."""
     downloads_dir = temp_dir / "downloads"
     if not downloads_dir.exists():
         return
-    
-    import time
-    current_time = time.time()
+    now = time.time()
     max_age_seconds = max_age_hours * 3600
     max_total_bytes = max_total_size_mb * 1024 * 1024
-    
-    # Get all files with their stats
-    files_info = []
+    files_with_stats = []
     total_size = 0
-    
-    for file_path in downloads_dir.glob("*"):
-        if file_path.is_file():
-            stat = file_path.stat()
-            files_info.append({
-                'path': file_path,
-                'mtime': stat.st_mtime,
-                'size': stat.st_size,
-                'age_hours': (current_time - stat.st_mtime) / 3600
-            })
-            total_size += stat.st_size
-    
-    cleaned_count = 0
-    
-    # Remove files older than max_age_hours
-    for file_info in files_info[:]:
-        if file_info['age_hours'] > max_age_hours:
+    for p in downloads_dir.glob("*"):
+        if p.is_file():
+            st = p.stat()
+            files_with_stats.append((p, st.st_mtime, st.st_size))
+            total_size += st.st_size
+    # Remove by age
+    for (p, mtime, size) in list(files_with_stats):
+        if now - mtime > max_age_seconds:
             try:
-                file_info['path'].unlink()
-                files_info.remove(file_info)
-                total_size -= file_info['size']
-                cleaned_count += 1
-                logger.info(f"Cleaned up old file: {file_info['path'].name} (age: {file_info['age_hours']:.1f}h)")
-            except Exception as e:
-                logger.warning(f"Failed to delete {file_info['path']}: {e}")
-    
-    # If still over size limit, remove oldest files
+                p.unlink(missing_ok=True)
+                total_size -= size
+            except Exception:
+                continue
+    # Enforce total size
     if total_size > max_total_bytes:
-        files_info.sort(key=lambda x: x['mtime'])  # Oldest first
-        for file_info in files_info:
+        files_with_stats.sort(key=lambda t: t[1])
+        for (p, _mtime, size) in files_with_stats:
             if total_size <= max_total_bytes:
                 break
             try:
-                file_info['path'].unlink()
-                total_size -= file_info['size']
-                cleaned_count += 1
-                logger.info(f"Cleaned up for space: {file_info['path'].name} (size: {file_info['size']/1024/1024:.1f}MB)")
-            except Exception as e:
-                logger.warning(f"Failed to delete {file_info['path']}: {e}")
-    
-    if cleaned_count > 0:
-        logger.info(f"Cleanup complete: removed {cleaned_count} files, {total_size/1024/1024:.1f}MB remaining")
+                p.unlink(missing_ok=True)
+                total_size -= size
+            except Exception:
+                continue
 
 async def save_base64_image(base64_data: str, file_path: Path, format: str = "PNG") -> None:
     """Save base64 image data to file"""
@@ -1701,7 +1678,7 @@ async def create_image(
                 download_path.parent.mkdir(exist_ok=True)
                 
                 # Clean up old files before saving new one
-                await cleanup_old_downloads(temp_dir, max_age_hours=24, max_total_size_mb=100)
+                cleanup_temp_dir(temp_dir, max_age_hours=24, max_total_size_mb=100)
                 
                 await save_base64_image(b64_data, download_path, output_format.upper())
                 
