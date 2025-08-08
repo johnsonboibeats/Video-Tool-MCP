@@ -133,13 +133,42 @@ async def _periodic_cleanup_loop():
             await asyncio.sleep(CLEANUP_INTERVAL_SECONDS)
             ctx = get_app_context()
             try:
-                cleanup_old_downloads(ctx.temp_dir, max_age_hours=24, max_total_size_mb=200)
+                cleanup_temp_dir(ctx.temp_dir, max_age_hours=24, max_total_size_mb=200)
                 METRICS["temp_cleanup_runs"] += 1
             except Exception:
                 # best-effort
                 pass
     except asyncio.CancelledError:
         return
+
+def cleanup_temp_dir(temp_dir: Path, max_age_hours: int = 24, max_total_size_mb: int = 200) -> None:
+    """Best-effort cleanup of temp directory by age and total size."""
+    now = time.time()
+    max_age_seconds = max_age_hours * 3600
+    if not temp_dir.exists():
+        return
+    # Remove old files anywhere under temp_dir
+    for p in temp_dir.glob("**/*"):
+        if p.is_file():
+            try:
+                if now - p.stat().st_mtime > max_age_seconds:
+                    p.unlink(missing_ok=True)
+            except Exception:
+                continue
+    # Enforce total size
+    files = [p for p in temp_dir.glob("**/*") if p.is_file()]
+    files.sort(key=lambda p: p.stat().st_mtime)  # oldest first
+    total = sum(p.stat().st_size for p in files)
+    limit = max_total_size_mb * 1024 * 1024
+    for p in files:
+        if total <= limit:
+            break
+        try:
+            sz = p.stat().st_size
+            p.unlink(missing_ok=True)
+            total -= sz
+        except Exception:
+            continue
 
 def get_default_output_mode() -> str:
     """Determine default output mode based on transport"""
