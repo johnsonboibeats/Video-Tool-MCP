@@ -1815,35 +1815,6 @@ async def edit_image(
         if ctx: await ctx.error(f"Edit image failed: {str(e)}")
         raise ValueError(f"Failed to edit image: {str(e)}")
 
-async def process_drive_image_direct(file_id: str, operation: str, **kwargs) -> Dict[str, Any]:
-    """
-    Process Google Drive images directly without temp files for maximum efficiency
-    
-    This is the most efficient path for Google Drive images:
-    Drive API -> Memory -> OpenAI API -> Result
-    (No temp file downloads required)
-    """
-    app_context = get_app_context()
-    
-    if not app_context.drive_service:
-        raise ValueError("Google Drive service not available")
-    
-    # Load image directly from Drive
-    base64_data, mime_type = await load_image_from_drive(file_id)
-    
-    # Convert to BytesIO for OpenAI API
-    image_bytes = base64.b64decode(base64_data)
-    image_file = io.BytesIO(image_bytes)
-    image_file.name = "image.png"  # Required for OpenAI client
-    
-    # Process based on operation type
-    if operation == "generate_variations":
-        return await _generate_variations_from_bytes(image_file, **kwargs)
-    elif operation == "analyze_image":
-        return await _analyze_image_from_base64(base64_data, **kwargs)
-    else:
-        raise ValueError(f"Unsupported operation: {operation}")
-
 @mcp.tool()
 async def generate_variations(
     image: str,
