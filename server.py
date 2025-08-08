@@ -255,44 +255,44 @@ async def handle_file_input(file_input: str, app_context: AppContext) -> str:
                 if content_length and content_length > max_bytes:
                     raise ValueError(f"File too large: {content_length/1024/1024:.1f} MB > {MAX_DOWNLOAD_SIZE_MB} MB")
 
-                # Download with simple retries
+                # Download with streaming + simple retries
                 last_err = None
                 for attempt in range(3):
                     try:
-                        response = await app_context.http_client.get(file_input)
-                        response.raise_for_status()
-                        data = response.content
-                        if len(data) == 0:
-                            raise ValueError("Downloaded file is empty")
-                        if len(data) > max_bytes:
-                            raise ValueError(f"File too large after download: {len(data)/1024/1024:.1f} MB")
+                        async with app_context.http_client.stream("GET", file_input) as response:
+                            response.raise_for_status()
+                            ct = response.headers.get('content-type') or content_type or ''
+                            if not ct:
+                                raise ValueError("Missing Content-Type for URL download")
+                            if not any(ct.startswith(pfx) for pfx in ALLOWED_IMAGE_MIME_PREFIXES):
+                                raise ValueError(f"Unsupported MIME type: {ct}")
+                            extension = mimetypes.guess_extension(ct.split(';')[0]) or '.bin'
+                            if extension == '.bin':
+                                from urllib.parse import urlparse
+                                url_ext = Path(urlparse(file_input).path).suffix
+                                if url_ext:
+                                    extension = url_ext
+                            if ct.startswith('image/') and extension == '.bin':
+                                if 'png' in ct:
+                                    extension = '.png'
+                                elif 'jpeg' in ct or 'jpg' in ct:
+                                    extension = '.jpg'
+                                elif 'webp' in ct:
+                                    extension = '.webp'
+                                elif 'gif' in ct:
+                                    extension = '.gif'
 
-                        ct = response.headers.get('content-type') or content_type or ''
-                        if not ct:
-                            raise ValueError("Missing Content-Type for URL download")
-                        if not any(ct.startswith(pfx) for pfx in ALLOWED_IMAGE_MIME_PREFIXES):
-                            raise ValueError(f"Unsupported MIME type: {ct}")
+                            temp_path = app_context.temp_dir / f"temp_download_{int(time.time())}{extension}"
+                            downloaded = 0
+                            async with aiofiles.open(temp_path, 'wb') as f:
+                                async for chunk in response.aiter_bytes(64 * 1024):
+                                    if not chunk:
+                                        continue
+                                    downloaded += len(chunk)
+                                    if downloaded > max_bytes:
+                                        raise ValueError(f"File too large after download: {downloaded/1024/1024:.1f} MB")
+                                    await f.write(chunk)
 
-                        # Determine extension
-                        extension = mimetypes.guess_extension(ct.split(';')[0]) or '.bin'
-                        if extension == '.bin':
-                            from urllib.parse import urlparse
-                            url_ext = Path(urlparse(file_input).path).suffix
-                            if url_ext:
-                                extension = url_ext
-                        if ct.startswith('image/') and extension == '.bin':
-                            if 'png' in ct:
-                                extension = '.png'
-                            elif 'jpeg' in ct or 'jpg' in ct:
-                                extension = '.jpg'
-                            elif 'webp' in ct:
-                                extension = '.webp'
-                            elif 'gif' in ct:
-                                extension = '.gif'
-
-                        temp_path = app_context.temp_dir / f"temp_download_{int(time.time())}{extension}"
-                        async with aiofiles.open(temp_path, 'wb') as f:
-                            await f.write(data)
 
                         # Cache path
                         try:
@@ -337,11 +337,16 @@ def initialize_app_context():
         temp_dir.mkdir(parents=True, exist_ok=True)
         logger.info(f"Temporary directory: {temp_dir}")
         
-        # Create HTTP client with redirect following and timeout
-        http_client = httpx.AsyncClient(
-            follow_redirects=True,
-            timeout=30.0
-        ) if HTTPX_AVAILABLE else None
+        # Create tuned HTTP client with connection limits and keep-alive
+        http_client = None
+        if HTTPX_AVAILABLE:
+            limits = httpx.Limits(max_connections=int(os.getenv("HTTP_MAX_CONNECTIONS", "50")),
+                                   max_keepalive=int(os.getenv("HTTP_MAX_KEEPALIVE", "20")))
+            http_client = httpx.AsyncClient(
+                follow_redirects=True,
+                timeout=httpx.Timeout(30.0, connect=10.0),
+                limits=limits
+            )
         
         # Initialize Google Drive service (synchronous version)
         drive_service = None
@@ -540,7 +545,13 @@ async def download_image(request: Request):
     
     if download_path.exists() and download_path.is_file():
         logger.info(f"Serving file: {download_path}")
-        return FileResponse(download_path)
+        # Add simple caching headers
+        etag = hashlib.sha256(str(download_path.stat().st_mtime_ns).encode()).hexdigest()
+        headers = {
+            "Cache-Control": "public, max-age=86400",
+            "ETag": etag
+        }
+        return FileResponse(download_path, headers=headers)
     else:
         logger.warning(f"File not found: {download_path}")
         return JSONResponse({"error": "File not found"}, status_code=404)
