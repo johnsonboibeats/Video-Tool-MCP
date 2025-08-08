@@ -1691,13 +1691,30 @@ async def edit_image(
     if n < 1 or n > 10:
         raise ValueError("Number of images must be between 1 and 10")
     
-    # Get file paths
-    image_path = await get_file_path(image)
-    mask_path = await get_file_path(mask) if mask else None
-    
-    # Load images as bytes
-    image_base64, image_mime = await load_image_as_base64(image_path)
-    image_bytes = base64.b64decode(image_base64)
+    # Prefer Google Drive fast path (no temp files) when possible
+    drive_fast_path_used = False
+    image_bytes = None
+    image_mime = "image/png"
+    if isinstance(image, str) and (
+        image.startswith('drive://') or 'drive.google.com' in image or 'docs.google.com' in image
+    ):
+        file_id = extract_file_id_from_url(image)
+        if file_id:
+            try:
+                app_ctx = get_app_context()
+                if app_ctx.drive_service:
+                    b64, image_mime = await load_image_from_drive(file_id)
+                    image_bytes = base64.b64decode(b64)
+                    drive_fast_path_used = True
+            except Exception:
+                drive_fast_path_used = False
+                image_bytes = None
+
+    if image_bytes is None:
+        # Fallback: resolve to path then load
+        image_path = await get_file_path(image)
+        image_base64, image_mime = await load_image_as_base64(image_path)
+        image_bytes = base64.b64decode(image_base64)
     
     # Determine file extension from MIME type
     image_ext = "png"  # default
@@ -1724,14 +1741,30 @@ async def edit_image(
         }
         
         # Prepare files for multipart upload
-        files = {
-            "image": (f"image.{image_ext}", image_bytes, f"image/{image_ext}"),
-        }
-        
-        if mask_path:
-            mask_base64, mask_mime = await load_image_as_base64(mask_path)
-            mask_bytes = base64.b64decode(mask_base64)
-            mask_ext = "png"  # default
+        files = {"image": (f"image.{image_ext}", image_bytes, f"image/{image_ext}")}
+
+        # Optional mask handling with Drive fast path
+        if mask:
+            mask_bytes = None
+            mask_mime = "image/png"
+            if isinstance(mask, str) and (
+                mask.startswith('drive://') or 'drive.google.com' in mask or 'docs.google.com' in mask
+            ):
+                mask_id = extract_file_id_from_url(mask)
+                if mask_id:
+                    try:
+                        app_ctx = get_app_context()
+                        if app_ctx.drive_service:
+                            mb64, mask_mime = await load_image_from_drive(mask_id)
+                            mask_bytes = base64.b64decode(mb64)
+                    except Exception:
+                        mask_bytes = None
+            if mask_bytes is None:
+                mask_path = await get_file_path(mask)
+                mask_base64, mask_mime = await load_image_as_base64(mask_path)
+                mask_bytes = base64.b64decode(mask_base64)
+
+            mask_ext = "png"
             if "jpeg" in mask_mime or "jpg" in mask_mime:
                 mask_ext = "jpg"
             elif "webp" in mask_mime:
@@ -1978,7 +2011,7 @@ async def extract_text(
         return {
             "success": True,
             "text": text_content,
-            "source_file": str(image_path),
+            "source": image if isinstance(image, str) else "buffer",
             "language_hint": language
         }
         
@@ -1986,7 +2019,7 @@ async def extract_text(
         return {
             "success": False,
             "error": str(e),
-            "source_file": str(image_path)
+            "source": image if isinstance(image, str) else "buffer"
         }
 
 
