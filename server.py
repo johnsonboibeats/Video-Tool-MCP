@@ -96,12 +96,23 @@ class AppContext(BaseModel):
     drive_service: Any = None
     temp_dir: Path
     http_client: Optional[httpx.AsyncClient] = None
+    download_semaphore: Optional[asyncio.Semaphore] = None
+    download_cache: Dict[str, Dict[str, Any]] = {}
 
 # Global app context for FastMCP tools
 _global_app_context: Optional[AppContext] = None
 
 # Global transport mode detection
 _transport_mode: str = "http"  # Default to http (remote)
+
+# Download policies
+MAX_DOWNLOAD_SIZE_MB: int = int(os.getenv("MAX_DOWNLOAD_SIZE_MB", "50"))
+DOWNLOAD_CACHE_TTL_SECONDS: int = int(os.getenv("DOWNLOAD_CACHE_TTL_SECONDS", "1800"))
+
+# Allowed MIME types for images
+ALLOWED_IMAGE_MIME_PREFIXES = {
+    "image/",
+}
 
 def get_default_output_mode() -> str:
     """Determine default output mode based on transport"""
@@ -206,59 +217,98 @@ async def handle_file_input(file_input: str, app_context: AppContext) -> str:
         except Exception as e:
             raise ValueError(f"Invalid base64 data: {e}")
     
-    # Handle HTTP URLs by downloading them
+    # Handle HTTP URLs with preflight, whitelist, caching
     if file_input.startswith('http://') or file_input.startswith('https://'):
         try:
             if not app_context.http_client:
                 raise ValueError("HTTP client not available for downloading URLs")
-            
-            logger.info(f"Downloading file from URL: {file_input}")
-            response = await app_context.http_client.get(file_input)
-            logger.info(f"HTTP response status: {response.status_code}, headers: {dict(response.headers)}")
-            response.raise_for_status()
-            
-            # Check if we got actual content
-            if len(response.content) == 0:
-                raise ValueError("Downloaded file is empty")
-            
-            # Determine file extension from Content-Type or URL
-            content_type = response.headers.get('content-type', '')
-            if content_type:
-                extension = mimetypes.guess_extension(content_type.split(';')[0]) or '.bin'
-            else:
-                # Extract extension from URL
-                extension = Path(file_input).suffix or '.bin'
-            
-            # Ensure we use image extensions for image content
-            if 'image' in content_type and extension == '.bin':
-                if 'png' in content_type:
-                    extension = '.png'
-                elif 'jpeg' in content_type or 'jpg' in content_type:
-                    extension = '.jpg'
-                elif 'webp' in content_type:
-                    extension = '.webp'
-                elif 'gif' in content_type:
-                    extension = '.gif'
-            
-            temp_path = app_context.temp_dir / f"temp_download_{int(time.time())}{extension}"
-            
-            async with aiofiles.open(temp_path, 'wb') as f:
-                await f.write(response.content)
-            
-            logger.info(f"Successfully downloaded file to: {temp_path}, size: {len(response.content)} bytes")
-            return str(temp_path)
+
+            # Cache hit?
+            cached = None
+            try:
+                cached = app_context.download_cache.get(file_input)
+            except Exception:
+                cached = None
+            now_ts = time.time()
+            if cached and (now_ts - cached.get('ts', 0)) < DOWNLOAD_CACHE_TTL_SECONDS:
+                p = Path(cached['path'])
+                if p.exists():
+                    return cached['path']
+
+            # Limit concurrency
+            sem = app_context.download_semaphore or asyncio.Semaphore(5)
+            async with sem:
+                # HEAD preflight
+                content_type = None
+                content_length = None
+                try:
+                    head = await app_context.http_client.head(file_input)
+                    if head.status_code < 400:
+                        content_type = head.headers.get('content-type')
+                        cl = head.headers.get('content-length')
+                        if cl and cl.isdigit():
+                            content_length = int(cl)
+                except Exception:
+                    pass
+
+                max_bytes = MAX_DOWNLOAD_SIZE_MB * 1024 * 1024
+                if content_length and content_length > max_bytes:
+                    raise ValueError(f"File too large: {content_length/1024/1024:.1f} MB > {MAX_DOWNLOAD_SIZE_MB} MB")
+
+                # Download with simple retries
+                last_err = None
+                for attempt in range(3):
+                    try:
+                        response = await app_context.http_client.get(file_input)
+                        response.raise_for_status()
+                        data = response.content
+                        if len(data) == 0:
+                            raise ValueError("Downloaded file is empty")
+                        if len(data) > max_bytes:
+                            raise ValueError(f"File too large after download: {len(data)/1024/1024:.1f} MB")
+
+                        ct = response.headers.get('content-type') or content_type or ''
+                        if not ct:
+                            raise ValueError("Missing Content-Type for URL download")
+                        if not any(ct.startswith(pfx) for pfx in ALLOWED_IMAGE_MIME_PREFIXES):
+                            raise ValueError(f"Unsupported MIME type: {ct}")
+
+                        # Determine extension
+                        extension = mimetypes.guess_extension(ct.split(';')[0]) or '.bin'
+                        if extension == '.bin':
+                            from urllib.parse import urlparse
+                            url_ext = Path(urlparse(file_input).path).suffix
+                            if url_ext:
+                                extension = url_ext
+                        if ct.startswith('image/') and extension == '.bin':
+                            if 'png' in ct:
+                                extension = '.png'
+                            elif 'jpeg' in ct or 'jpg' in ct:
+                                extension = '.jpg'
+                            elif 'webp' in ct:
+                                extension = '.webp'
+                            elif 'gif' in ct:
+                                extension = '.gif'
+
+                        temp_path = app_context.temp_dir / f"temp_download_{int(time.time())}{extension}"
+                        async with aiofiles.open(temp_path, 'wb') as f:
+                            await f.write(data)
+
+                        # Cache path
+                        try:
+                            app_context.download_cache[file_input] = {"path": str(temp_path), "ts": now_ts}
+                        except Exception:
+                            pass
+
+                        logger.info(f"Successfully downloaded file to: {temp_path}, size: {len(data)} bytes")
+                        return str(temp_path)
+                    except Exception as e:
+                        last_err = e
+                        await asyncio.sleep(0.5 * (attempt + 1))
+                raise ValueError(f"Failed to download file from URL: {last_err}")
         except Exception as e:
-            if HTTPX_AVAILABLE:
-                import httpx
-                if isinstance(e, httpx.HTTPStatusError):
-                    raise ValueError(f"HTTP error downloading file: {e.response.status_code} {e.response.reason_phrase} for URL: {file_input}")
-                elif isinstance(e, httpx.RequestError):
-                    raise ValueError(f"Network error downloading file: {e} for URL: {file_input}")
-            
-            # Generic error handling
-            error_details = f"Failed to download file from URL: {e}"
             logger.error(f"Download error for {file_input}: {e}")
-            raise ValueError(error_details)
+            raise
     
     # This function should not be called with other input types.
     # The get_file_path function is responsible for routing.
@@ -322,13 +372,22 @@ def initialize_app_context():
             openai_client=client,
             drive_service=drive_service,
             temp_dir=temp_dir,
-            http_client=http_client
+            http_client=http_client,
+            download_semaphore=asyncio.Semaphore(int(os.getenv("MAX_CONCURRENT_DOWNLOADS", "5"))),
+            download_cache={}
         )
         
         # Set global context for FastMCP tools
         global _global_app_context
         _global_app_context = context
         
+        # Cleanup download temp dir
+        try:
+            await_cleanup = False  # sync context init; call sync cleaner
+            cleanup_old_downloads(temp_dir, max_age_hours=24, max_total_size_mb=200)
+        except Exception as e:
+            logger.warning(f"Temp cleanup failed: {e}")
+
         return context
         
     except Exception as e:
@@ -426,12 +485,13 @@ async def health_check(request: Request):
     """Health check endpoint for Railway deployment"""
     logger.info("Health check endpoint called")
     try:
+        base_url = get_base_url(request)
         response_data = {
             "status": "healthy",
             "timestamp": time.time(),
             "server": "Image Tool MCP Server",
             "oauth_enabled": True,
-            "oauth_issuer": OAUTH_CONFIG["issuer"],
+            "oauth_issuer": get_oauth_config(base_url)["issuer"],
             "oauth_endpoints": {
                 "authorization": "/oauth/authorize",
                 "token": "/oauth/token",
@@ -510,18 +570,28 @@ from datetime import datetime, timedelta
 
 
 # OAuth configuration
-OAUTH_CONFIG = {
-    "issuer": "https://claude.ai",
-    "authorization_endpoint": "https://claude.ai/oauth/authorize",
-    "token_endpoint": "https://claude.ai/oauth/token",
-    "jwks_uri": "https://claude.ai/.well-known/jwks.json",
-    "response_types_supported": ["code"],
-    "subject_types_supported": ["public"],
-    "id_token_signing_alg_values_supported": ["RS256"],
-    "scopes_supported": ["read", "write", "image_processing"],
-    "token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post"],
-    "grant_types_supported": ["authorization_code", "refresh_token"]
-}
+def get_base_url(request: Request) -> str:
+    """Get the correct base URL with HTTPS for Railway/proxy deployments"""
+    if request.headers.get("x-forwarded-proto") == "https" or request.url.scheme == "https":
+        return f"https://{request.url.netloc}/"
+    return f"{request.base_url}"
+
+def get_oauth_config(base_url: str) -> Dict[str, Any]:
+    """Generate OAuth configuration with correct server URLs"""
+    return {
+        "issuer": base_url.rstrip('/'),
+        "authorization_endpoint": f"{base_url}oauth/authorize",
+        "token_endpoint": f"{base_url}oauth/token",
+        "userinfo_endpoint": f"{base_url}oauth/userinfo",
+        "revocation_endpoint": f"{base_url}oauth/revoke",
+        "jwks_uri": f"{base_url}.well-known/jwks.json",
+        "response_types_supported": ["code"],
+        "subject_types_supported": ["public"],
+        "id_token_signing_alg_values_supported": ["HS256"],
+        "scopes_supported": ["read", "write", "image_processing"],
+        "token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post"],
+        "grant_types_supported": ["authorization_code", "refresh_token"]
+    }
 
 # JWT configuration for token handling
 JWT_SECRET = os.getenv("JWT_SECRET", secrets.token_urlsafe(32))
@@ -532,11 +602,11 @@ REFRESH_TOKEN_EXPIRY_DAYS = 30
 # In-memory token storage (use Redis/database in production)
 token_store: Dict[str, Dict[str, Any]] = {}
 
-def generate_access_token(user_id: str, scopes: list = None, audience: str = None) -> str:
+def generate_access_token(user_id: str, scopes: list = None, audience: str = None, issuer: Optional[str] = None) -> str:
     """Generate JWT access token with audience validation"""
     payload = {
         "sub": user_id,
-        "iss": OAUTH_CONFIG["issuer"],
+        "iss": issuer or "https://image-tool-mcp",
         "aud": audience or "claude",  # RFC 8707: Include specific audience
         "exp": datetime.utcnow() + timedelta(hours=JWT_EXPIRY_HOURS),
         "iat": datetime.utcnow(),
@@ -544,11 +614,11 @@ def generate_access_token(user_id: str, scopes: list = None, audience: str = Non
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
-def generate_refresh_token(user_id: str) -> str:
+def generate_refresh_token(user_id: str, issuer: Optional[str] = None) -> str:
     """Generate refresh token"""
     payload = {
         "sub": user_id,
-        "iss": OAUTH_CONFIG["issuer"],
+        "iss": issuer or "https://image-tool-mcp",
         "aud": "claude",
         "exp": datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRY_DAYS),
         "iat": datetime.utcnow(),
@@ -619,7 +689,7 @@ async def oauth_authorize(request: Request):
         }, status_code=400)
     
     # Validate resource matches this server
-    server_uri = f"{request.base_url.scheme}://{request.base_url.netloc}"
+    server_uri = get_base_url(request).rstrip('/')
     if not resource.startswith(server_uri):
         return JSONResponse({
             "error": "invalid_request",
@@ -728,8 +798,10 @@ async def handle_authorization_code_grant(form_data) -> JSONResponse:
     
     # Include resource as audience (RFC 8707)
     resource = auth_data.get("resource", "claude")
-    access_token = generate_access_token(user_id, scopes, audience=resource)
-    refresh_token = generate_refresh_token(user_id)
+    # Derive issuer from stored resource base if possible
+    issuer = resource.rstrip('/') if resource else None
+    access_token = generate_access_token(user_id, scopes, audience=resource, issuer=issuer)
+    refresh_token = generate_refresh_token(user_id, issuer=issuer)
     
     # Store refresh token
     token_store[refresh_token] = {
@@ -789,8 +861,9 @@ async def handle_refresh_token_grant(form_data) -> JSONResponse:
     
     # Include resource as audience (RFC 8707)
     resource = token_data.get("resource", "claude")
-    access_token = generate_access_token(user_id, scopes, audience=resource)
-    new_refresh_token = generate_refresh_token(user_id)
+    issuer = resource.rstrip('/') if resource else None
+    access_token = generate_access_token(user_id, scopes, audience=resource, issuer=issuer)
+    new_refresh_token = generate_refresh_token(user_id, issuer=issuer)
     
     # Store new refresh token
     token_store[new_refresh_token] = {
@@ -859,9 +932,10 @@ async def oauth_userinfo(request: Request):
     
     user_id = payload.get("sub")
     
+    base_url = get_base_url(request)
     return JSONResponse({
         "sub": user_id,
-        "iss": OAUTH_CONFIG["issuer"],
+        "iss": get_oauth_config(base_url)["issuer"],
         "name": "Claude User",
         "email": f"{user_id}@claude.ai",
         "scope": payload.get("scope", "read write")
@@ -875,7 +949,8 @@ async def oauth_userinfo(request: Request):
 async def oauth_discovery(request: Request):
     """Enhanced OAuth discovery endpoint for Claude compatibility"""
     logger.info("OAuth discovery endpoint called")
-    return JSONResponse(OAUTH_CONFIG)
+    base_url = get_base_url(request)
+    return JSONResponse(get_oauth_config(base_url))
 
 @mcp.custom_route("/.well-known/oauth-authorization-server/mcp", methods=["GET"])
 async def oauth_discovery_mcp(request: Request):
@@ -886,11 +961,12 @@ async def oauth_discovery_mcp(request: Request):
 async def oauth_protected_resource(request: Request):
     """OAuth protected resource endpoint for Claude compatibility"""
     logger.info("OAuth protected resource endpoint called")
+    base_url = get_base_url(request)
     return JSONResponse({
         "resource": "mcp",
         "scopes": ["read", "write", "image_processing"],
-        "token_endpoint": f"{request.base_url}oauth/token",
-        "userinfo_endpoint": f"{request.base_url}oauth/userinfo"
+        "token_endpoint": f"{base_url}oauth/token",
+        "userinfo_endpoint": f"{base_url}oauth/userinfo"
     })
 
 # =============================================================================
@@ -1001,11 +1077,13 @@ async def oauth_status(request: Request):
     """OAuth server status endpoint"""
     logger.info("OAuth status endpoint called")
     
+    base_url = get_base_url(request)
+    cfg = get_oauth_config(base_url)
     return JSONResponse({
         "oauth_enabled": True,
-        "issuer": OAUTH_CONFIG["issuer"],
-        "supported_grant_types": OAUTH_CONFIG["grant_types_supported"],
-        "supported_scopes": OAUTH_CONFIG["scopes_supported"],
+        "issuer": cfg["issuer"],
+        "supported_grant_types": cfg["grant_types_supported"],
+        "supported_scopes": cfg["scopes_supported"],
         "active_tokens": len(token_store),
         "server_time": datetime.utcnow().isoformat()
     })
@@ -2434,342 +2512,6 @@ async def get_image_from_drive(
         if ctx: await ctx.error(error_msg)
         logger.error(error_msg)
         return {"error": error_msg, "success": False}
-
-# =============================================================================
-# GOOGLE DRIVE TOOLS FOR IMAGES
-# =============================================================================
-
-@mcp.tool()
-async def search_images(
-    query: str = "",
-    folder_id: Optional[str] = None,
-    max_results: int = 50,
-    ctx: Context = None
-) -> Dict[str, Any]:
-    """
-    Search for image files in Google Drive.
-    
-    Args:
-        query: Search query (e.g., "vacation photos", "name contains 'screenshot'")
-        folder_id: Optional folder to search within
-        max_results: Maximum number of results (1-1000)
-        
-    Returns:
-        List of image files with download URLs and metadata
-    """
-    try:
-        app_context = get_app_context()
-        drive_service = app_context.drive_service
-        
-        if not drive_service:
-            return {"error": "Google Drive not configured. Please set GOOGLE_OAUTH_TOKEN environment variable", "success": False}
-        
-        if ctx:
-            await ctx.info(f"Searching for images: {query}")
-        
-        # Build search query for images
-        q_parts = [
-            "trashed=false",
-            "(mimeType contains 'image/')"
-        ]
-        
-        if query:
-            q_parts.append(f"name contains '{query}'")
-        
-        if folder_id:
-            q_parts.append(f"'{folder_id}' in parents")
-        
-        q = " and ".join(q_parts)
-        
-        results = drive_service.files().list(
-            q=q,
-            pageSize=min(max_results, 1000),
-            fields="nextPageToken, files(id, name, mimeType, size, createdTime, modifiedTime, webViewLink)"
-        ).execute()
-        
-        items = results.get('files', [])
-        
-        # Convert to direct download URLs
-        processed_items = []
-        for item in items:
-            file_id = item['id']
-            direct_url = f"https://drive.google.com/uc?export=download&id={file_id}"
-            
-            processed_items.append({
-                "id": file_id,
-                "name": item['name'],
-                "mime_type": item['mimeType'],
-                "size": int(item.get('size', 0)),
-                "created_time": item['createdTime'],
-                "modified_time": item['modifiedTime'],
-                "web_view_link": item.get('webViewLink', ''),
-                "direct_download_url": direct_url,
-                "drive_url": f"drive://{file_id}"  # For use with other tools
-            })
-        
-        return {
-            "success": True,
-            "query": query,
-            "total_results": len(processed_items),
-            "images": processed_items
-        }
-        
-    except Exception as e:
-        error_msg = f"Error searching images: {str(e)}"
-        if ctx: await ctx.error(error_msg)
-        logger.error(error_msg)
-        return {"error": error_msg, "success": False}
-
-@mcp.tool()
-async def upload_image(
-    image_path: Optional[str] = None,
-    image_data: Optional[str] = None,
-    image_url: Optional[str] = None,
-    filename: Optional[str] = None,
-    folder_id: Optional[str] = None,
-    description: Optional[str] = None,
-    ctx: Context = None
-) -> Dict[str, Any]:
-    """
-    Upload an image to Google Drive.
-    
-    Args:
-        image_path: Local image path (for local files)
-        image_data: Base64 encoded image data (for generated images)
-        image_url: HTTP URL to image (for remote images)
-        filename: Name for the uploaded file
-        folder_id: Google Drive folder ID (default: root)
-        description: Optional description for the image
-        
-    Returns:
-        Upload result with file ID and metadata
-    """
-    try:
-        app_context = get_app_context()
-        drive_service = app_context.drive_service
-        
-        if not drive_service:
-            return {"error": "Google Drive not configured. Please set GOOGLE_OAUTH_TOKEN environment variable", "success": False}
-        
-        # Validate input - exactly one source must be provided
-        input_count = sum(bool(x) for x in [image_path, image_data, image_url])
-        if input_count != 1:
-            return {"error": "Exactly one of image_path, image_data, or image_url must be provided", "success": False}
-        
-        # Handle different input types
-        temp_file_path = None
-        actual_filename = None
-        
-        if image_path:
-            # Local file path mode
-            file_path = await get_file_path(image_path, app_context)
-            actual_filename = filename or Path(file_path).name
-            temp_file_path = file_path
-            
-            if ctx:
-                await ctx.info(f"Uploading local image: {image_path}")
-                
-        elif image_data:
-            # Base64 data mode
-            if not filename:
-                return {"error": "filename is required when using image_data", "success": False}
-            
-            try:
-                # Handle data URLs
-                if image_data.startswith('data:'):
-                    header, data = image_data.split(',', 1)
-                    file_bytes = base64.b64decode(data)
-                    
-                    # Extract MIME type for extension
-                    mime_match = re.search(r'data:([^;]+)', header)
-                    if mime_match and not filename.endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp')):
-                        mime_type = mime_match.group(1)
-                        extension = mimetypes.guess_extension(mime_type) or '.png'
-                        if not filename.endswith(extension):
-                            filename = f"{filename}{extension}"
-                else:
-                    # Raw base64
-                    file_bytes = base64.b64decode(image_data)
-                    if not filename.endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp')):
-                        filename = f"{filename}.png"
-                
-                # Create temporary file
-                actual_filename = filename
-                safe_filename = re.sub(r'[^\w\-_.]', '_', actual_filename)
-                temp_file_path = app_context.temp_dir / f"upload_{secrets.token_urlsafe(8)}_{safe_filename}"
-                
-                # Write decoded data to temp file
-                async with aiofiles.open(temp_file_path, 'wb') as f:
-                    await f.write(file_bytes)
-                
-                if ctx:
-                    await ctx.info(f"Created temp file from base64 data: {temp_file_path}")
-                    
-            except Exception as e:
-                return {"error": f"Failed to decode base64 data: {str(e)}", "success": False}
-                
-        elif image_url:
-            # URL fetch mode
-            if not filename:
-                return {"error": "filename is required when using image_url", "success": False}
-            
-            if not app_context.http_client:
-                return {"error": "HTTP client not available for URL fetching", "success": False}
-            
-            try:
-                # Fetch image from URL
-                response = await app_context.http_client.get(image_url)
-                response.raise_for_status()
-                
-                # Create temporary file
-                actual_filename = filename
-                safe_filename = re.sub(r'[^\w\-_.]', '_', actual_filename)
-                temp_file_path = app_context.temp_dir / f"url_{secrets.token_urlsafe(8)}_{safe_filename}"
-                
-                # Write fetched data to temp file
-                async with aiofiles.open(temp_file_path, 'wb') as f:
-                    await f.write(response.content)
-                
-                if ctx:
-                    await ctx.info(f"Downloaded image from URL: {image_url}")
-                    
-            except Exception as e:
-                return {"error": f"Failed to fetch image from URL: {str(e)}", "success": False}
-        
-        # Determine mime type
-        mime_type, _ = mimetypes.guess_type(actual_filename)
-        if not mime_type or not mime_type.startswith('image/'):
-            # Default based on extension
-            ext = Path(actual_filename).suffix.lower()
-            mime_map = {
-                '.png': 'image/png',
-                '.jpg': 'image/jpeg',
-                '.jpeg': 'image/jpeg',
-                '.gif': 'image/gif',
-                '.webp': 'image/webp',
-                '.bmp': 'image/bmp'
-            }
-            mime_type = mime_map.get(ext, 'image/png')  # Default to PNG
-        
-        # Prepare file metadata
-        file_metadata = {
-            'name': actual_filename,
-            'description': description or f"Image uploaded via Image-Tool-MCP Server"
-        }
-        
-        # Set parent folder if specified
-        if folder_id and folder_id != "root":
-            file_metadata['parents'] = [folder_id]
-        
-        # Create media upload object
-        media = MediaFileUpload(
-            str(temp_file_path),
-            mimetype=mime_type,
-            resumable=True
-        )
-        
-        # Upload file
-        request = drive_service.files().create(
-            body=file_metadata,
-            media_body=media,
-            fields='id, name, mimeType, size, createdTime, webViewLink'
-        )
-        
-        # Execute upload with progress tracking
-        response = None
-        while response is None:
-            status, response = request.next_chunk()
-            if ctx and status:
-                await ctx.report_progress(int(status.progress() * 100), 100)
-        
-        if ctx:
-            await ctx.info(f"Upload completed: {response['name']}")
-        
-        # Generate direct download URL
-        file_id = response['id']
-        direct_url = f"https://drive.google.com/uc?export=download&id={file_id}"
-        
-        return {
-            "success": True,
-            "file_id": file_id,
-            "name": response['name'],
-            "mime_type": response['mimeType'],
-            "size": int(response.get('size', 0)),
-            "created_time": response['createdTime'],
-            "web_view_link": response['webViewLink'],
-            "direct_download_url": direct_url,
-            "drive_url": f"drive://{file_id}",
-            "folder_id": folder_id or "root"
-        }
-        
-    except Exception as e:
-        error_msg = f"Error uploading image: {str(e)}"
-        if ctx: await ctx.error(error_msg)
-        logger.error(error_msg)
-        return {"error": error_msg, "success": False}
-
-@mcp.tool()
-async def get_image_from_drive(
-    file_id_or_url: str,
-    ctx: Context = None
-) -> Dict[str, Any]:
-    """
-    Get direct download URL for an image in Google Drive.
-    
-    Args:
-        file_id_or_url: Google Drive file ID, share URL, or drive:// URL
-        
-    Returns:
-        Direct download URL and image metadata
-    """
-    try:
-        app_context = get_app_context()
-        drive_service = app_context.drive_service
-        
-        if not drive_service:
-            return {"error": "Google Drive not configured. Please set GOOGLE_OAUTH_TOKEN environment variable", "success": False}
-        
-        # Extract file ID from various URL formats
-        file_id = extract_file_id_from_url(file_id_or_url)
-        if not file_id:
-            file_id = file_id_or_url  # Assume it's a direct file ID
-        
-        if ctx:
-            await ctx.info(f"Getting image info for: {file_id}")
-        
-        # Get file metadata
-        file_metadata = drive_service.files().get(
-            fileId=file_id,
-            fields="id, name, mimeType, size, createdTime, modifiedTime, webViewLink"
-        ).execute()
-        
-        # Verify it's an image
-        mime_type = file_metadata['mimeType']
-        if not mime_type.startswith('image/'):
-            return {"error": f"File is not an image (MIME type: {mime_type})", "success": False}
-        
-        # Generate direct download URL
-        direct_url = f"https://drive.google.com/uc?export=download&id={file_id}"
-        
-        return {
-            "success": True,
-            "file_id": file_id,
-            "name": file_metadata['name'],
-            "mime_type": mime_type,
-            "size": int(file_metadata.get('size', 0)),
-            "created_time": file_metadata['createdTime'],
-            "modified_time": file_metadata['modifiedTime'],
-            "web_view_link": file_metadata.get('webViewLink', ''),
-            "direct_download_url": direct_url,
-            "drive_url": f"drive://{file_id}"
-        }
-        
-    except Exception as e:
-        error_msg = f"Error getting image from Drive: {str(e)}"
-        if ctx: await ctx.error(error_msg)
-        logger.error(error_msg)
-        return {"error": error_msg, "success": False}
-
 
 # =============================================================================
 # SERVER STARTUP
