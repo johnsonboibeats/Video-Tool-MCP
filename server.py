@@ -108,11 +108,38 @@ _transport_mode: str = "http"  # Default to http (remote)
 # Download policies
 MAX_DOWNLOAD_SIZE_MB: int = int(os.getenv("MAX_DOWNLOAD_SIZE_MB", "50"))
 DOWNLOAD_CACHE_TTL_SECONDS: int = int(os.getenv("DOWNLOAD_CACHE_TTL_SECONDS", "1800"))
+CLEANUP_INTERVAL_SECONDS: int = int(os.getenv("CLEANUP_INTERVAL_SECONDS", "1800"))
 
 # Allowed MIME types for images
 ALLOWED_IMAGE_MIME_PREFIXES = {
     "image/",
 }
+
+# Simple metrics
+METRICS: Dict[str, Any] = {
+    "http_download_requests": 0,
+    "http_download_bytes_total": 0,
+    "http_download_errors": 0,
+    "http_cache_hits": 0,
+    "temp_cleanup_runs": 0
+}
+
+_cleanup_task_started: bool = False
+
+async def _periodic_cleanup_loop():
+    global METRICS
+    try:
+        while True:
+            await asyncio.sleep(CLEANUP_INTERVAL_SECONDS)
+            ctx = get_app_context()
+            try:
+                cleanup_old_downloads(ctx.temp_dir, max_age_hours=24, max_total_size_mb=200)
+                METRICS["temp_cleanup_runs"] += 1
+            except Exception:
+                # best-effort
+                pass
+    except asyncio.CancelledError:
+        return
 
 def get_default_output_mode() -> str:
     """Determine default output mode based on transport"""
@@ -393,6 +420,15 @@ def initialize_app_context():
         except Exception as e:
             logger.warning(f"Temp cleanup failed: {e}")
 
+        # Start periodic cleanup task (best-effort)
+        global _cleanup_task_started
+        if not _cleanup_task_started:
+            try:
+                asyncio.get_event_loop().create_task(_periodic_cleanup_loop())
+                _cleanup_task_started = True
+            except Exception:
+                pass
+
         return context
         
     except Exception as e:
@@ -522,6 +558,11 @@ async def health_check(request: Request):
     except Exception as e:
         logger.error(f"Health check error: {e}")
         return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
+
+@mcp.custom_route("/metrics", methods=["GET"])
+async def metrics_endpoint(request: Request):
+    """Return simple internal metrics counters."""
+    return JSONResponse(METRICS)
 
 @mcp.custom_route("/", methods=["GET"])
 async def root_endpoint(request: Request):
