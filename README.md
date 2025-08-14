@@ -4,7 +4,7 @@ A comprehensive Model Context Protocol (MCP) server for image processing tasks, 
 
 ## Features
 
-- **Image Generation**: Create images from text prompts using OpenAI's gpt-image-1 model
+- **Image Generation**: Create images from text prompts using OpenAI's gpt-image-1 or Google Vertex AI Imagen 4.0 Ultra
 - **Image Analysis**: Analyze images with detailed descriptions using GPT-4o
 - **Image Editing**: Edit images with text prompts and optional masks
 - **Image Variations**: Generate variations of existing images
@@ -55,9 +55,19 @@ For detailed OAuth documentation, see [OAUTH_IMPLEMENTATION.md](OAUTH_IMPLEMENTA
 ## Environment Variables
 
 ### Required
-- `OPENAI_API_KEY`: Your OpenAI API key for image generation and analysis
+- `OPENAI_API_KEY`: Your OpenAI API key for image generation and analysis (used by most tools; create_image can also use Vertex)
 
 ### Optional
+#### Vertex AI (Imagen) for create_image (Optional)
+- `CREATE_IMAGE_MODEL`: Default model for the `create_image` tool only. Examples:
+  - `openai:gpt-image-1` (default)
+  - `vertex:imagen-4.0-ultra-generate-preview-06-06` (see: https://cloud.google.com/vertex-ai/generative-ai/docs/models/imagen/4-0-ultra-generate-preview-06-06)
+- `GOOGLE_CLOUD_PROJECT`: GCP project for Vertex AI
+- `VERTEX_LOCATION`: Vertex region (e.g., `us-central1`)
+- `GOOGLE_CLOUD_REGION`: Same as above (for consistency)
+- `GOOGLE_APPLICATION_CREDENTIALS`: Path to ADC JSON file (in Railway, provide JSON via env and write it to a temp file at startup)
+
+Note: Vertex configuration is used only by `create_image` when `CREATE_IMAGE_MODEL` selects a Vertex model. Other tools continue using OpenAI.
 - `PORT`: Server port (default: 8080)
 - `ALLOWED_ORIGINS`: CORS allowed origins (default: claude.ai domains)
 - `MAX_REQUESTS_PER_MINUTE`: Rate limiting (default: 100)
