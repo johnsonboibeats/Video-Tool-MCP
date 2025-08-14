@@ -72,6 +72,15 @@ except ImportError:
     HTTPX_AVAILABLE = False
     logger.warning("Httpx not available - some image features may be disabled")
 
+# Vertex AI (Imagen) imports with graceful fallbacks
+try:
+    import vertexai  # type: ignore
+    from vertexai.preview.vision_models import ImageGenerationModel  # type: ignore
+    VERTEX_AVAILABLE = True
+except Exception:
+    VERTEX_AVAILABLE = False
+    logger.warning("Vertex AI SDK not available - Imagen models will be disabled")
+
 # Google Drive imports with graceful fallbacks
 try:
     from google.auth.transport.requests import Request
@@ -98,6 +107,10 @@ class AppContext(BaseModel):
     http_client: Optional[httpx.AsyncClient] = None
     download_semaphore: Optional[asyncio.Semaphore] = None
     download_cache: Dict[str, Dict[str, Any]] = {}
+    # Vertex AI (Imagen) configuration
+    vertex_project: Optional[str] = None
+    vertex_location: Optional[str] = None
+    vertex_initialized: bool = False
 
 # Global app context for FastMCP tools
 _global_app_context: Optional[AppContext] = None
@@ -430,6 +443,18 @@ def initialize_app_context():
                 logger.error(f"Failed to initialize Google Drive service: {e}")
                 drive_service = None
         
+        # Initialize Vertex AI (optional)
+        vertex_project = os.getenv("GOOGLE_CLOUD_PROJECT") or os.getenv("VERTEX_PROJECT")
+        vertex_location = os.getenv("VERTEX_LOCATION", "us-central1")
+        vertex_initialized = False
+        if VERTEX_AVAILABLE and vertex_project:
+            try:
+                vertexai.init(project=vertex_project, location=vertex_location)  # type: ignore
+                vertex_initialized = True
+                logger.info(f"Vertex AI initialized for project {vertex_project} in {vertex_location}")
+            except Exception as e:
+                logger.warning(f"Failed to initialize Vertex AI SDK: {e}")
+
         # Create context
         context = AppContext(
             openai_client=client,
@@ -437,7 +462,10 @@ def initialize_app_context():
             temp_dir=temp_dir,
             http_client=http_client,
             download_semaphore=asyncio.Semaphore(int(os.getenv("MAX_CONCURRENT_DOWNLOADS", "5"))),
-            download_cache={}
+            download_cache={},
+            vertex_project=vertex_project,
+            vertex_location=vertex_location,
+            vertex_initialized=vertex_initialized
         )
         
         # Set global context for FastMCP tools
@@ -1536,7 +1564,7 @@ async def get_file_path(file_input: str) -> str:
 async def create_image(
     prompt: str,
     ctx: Context = None,
-    model: Literal["gpt-image-1"] = "gpt-image-1",
+    model: Literal["gpt-image-1", "auto", "vertex:imagen-4.0-ultra-generate-preview-06-06"] = "auto",
     size: Literal["1024x1024", "1536x1024", "1024x1536", "auto"] = "auto",
     quality: Literal["auto", "high", "medium", "low"] = "auto",
     background: Literal["transparent", "opaque", "auto"] = "auto", 
@@ -1570,10 +1598,11 @@ async def create_image(
     """
     # Get application context
     app_context = get_app_context()
-    
-    client = app_context.openai_client
-    check_openai_client(client)
     temp_dir = app_context.temp_dir
+
+    # Determine model selection (scoped to create_image only)
+    env_model = os.getenv("CREATE_IMAGE_MODEL")
+    selected_model = model if model and model != "auto" else (env_model or "gpt-image-1")
     
     # Auto-detect output mode based on transport if not specified
     if output_mode is None:
@@ -1592,6 +1621,51 @@ async def create_image(
             output_mode = "file"
     
     # No size limitations needed for URL mode (files stored on server)
+
+    # Vertex (Imagen) path
+    if selected_model.startswith("vertex:") or selected_model == "imagen-4.0-ultra-generate-preview-06-06":
+        if not VERTEX_AVAILABLE or not app_context.vertex_initialized:
+            raise ValueError("Vertex AI not available or not initialized; set GOOGLE_CLOUD_PROJECT and VERTEX_LOCATION and deploy with google-cloud-aiplatform installed")
+        # Imagen 4.0 Ultra currently returns 1 image per request; enforce n=1
+        if n != 1 and ctx:
+            await ctx.info("Vertex Imagen 4.0 Ultra supports only n=1; overriding to 1")
+        try:
+            model_id = selected_model.split(":", 1)[1] if selected_model.startswith("vertex:") else selected_model
+            if ctx: await ctx.info(f"Generating image with Vertex model: {model_id}")
+            imagen_model = ImageGenerationModel.from_pretrained(model_id)
+            # Generate one image
+            images = imagen_model.generate_images(prompt=prompt, number_of_images=1)
+            img_obj = images[0] if isinstance(images, list) else images
+            data_bytes = None
+            try:
+                if hasattr(img_obj, "image_bytes") and img_obj.image_bytes:
+                    data_bytes = img_obj.image_bytes
+                elif hasattr(img_obj, "_image_bytes") and img_obj._image_bytes:
+                    data_bytes = img_obj._image_bytes
+            except Exception:
+                data_bytes = None
+            if data_bytes is None:
+                # Try PIL fallback if present on object
+                pil_image = getattr(img_obj, "_pil_image", None) or getattr(img_obj, "image", None)
+                if pil_image is None:
+                    raise ValueError("Failed to extract image bytes from Vertex response")
+                import io as _io
+                buf = _io.BytesIO()
+                pil_image.save(buf, format=output_format.upper())
+                data_bytes = buf.getvalue()
+            b64_data = base64.b64encode(data_bytes).decode()
+            # Reuse common output handler
+            return await handle_image_output(
+                b64_data,
+                output_format,
+                output_mode,
+                file_path,
+                temp_dir,
+                ctx
+            )
+        except Exception as e:
+            if ctx: await ctx.error(f"Vertex image generation failed: {str(e)}")
+            raise ValueError(f"Failed to generate image with Vertex AI: {str(e)}")
     
     # Validate inputs
     if len(prompt) > 32000:
@@ -1613,10 +1687,13 @@ async def create_image(
     if n > 1 and ctx:
         await ctx.report_progress(0, n, f"Starting generation of {n} images...")
     
+    # OpenAI path
+    client = app_context.openai_client
+    check_openai_client(client)
     # Prepare API parameters
     params = {
         "prompt": prompt,
-        "model": model,
+        "model": selected_model,
         "n": n
     }
     
