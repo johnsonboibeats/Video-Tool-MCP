@@ -1658,19 +1658,61 @@ async def create_image(
             model_id = selected_model.split(":", 1)[1] if selected_model.startswith("vertex:") else selected_model
             if ctx: await ctx.info(f"Generating image with Vertex model: {model_id}")
             imagen_model = ImageGenerationModel.from_pretrained(model_id)
-            # Generate one image
-            images = imagen_model.generate_images(prompt=prompt, number_of_images=1)
-            img_obj = images[0] if isinstance(images, list) else images
-            data_bytes = None
-            # 1) Direct bytes properties (preferred)
+            # Optional: map size to aspect ratio if provided
+            gen_kwargs = {"prompt": prompt, "number_of_images": 1}
             try:
-                if hasattr(img_obj, "image_bytes") and img_obj.image_bytes:
-                    data_bytes = img_obj.image_bytes
-                elif hasattr(img_obj, "_image_bytes") and getattr(img_obj, "_image_bytes"):
-                    data_bytes = getattr(img_obj, "_image_bytes")
+                if size and size != "auto" and "x" in size:
+                    w, h = size.split("x")
+                    if w == h:
+                        gen_kwargs["aspect_ratio"] = "1:1"
+                    elif w > h:
+                        gen_kwargs["aspect_ratio"] = "16:9"
+                    else:
+                        gen_kwargs["aspect_ratio"] = "9:16"
             except Exception:
-                data_bytes = None
-            # 2) PIL fallback
+                pass
+            resp = imagen_model.generate_images(**gen_kwargs)
+
+            # Normalize response to a list of image-like objects
+            candidates = []
+            if isinstance(resp, list):
+                candidates = resp
+            else:
+                for attr in ("images", "generated_images", "_images"):
+                    if hasattr(resp, attr):
+                        try:
+                            candidates = getattr(resp, attr) or []
+                            break
+                        except Exception:
+                            continue
+            if not candidates:
+                candidates = [resp]
+
+            # Extract bytes from the first candidate
+            img_obj = candidates[0]
+            data_bytes = None
+            # 1) Direct bytes
+            for attr in ("image_bytes", "_image_bytes"):
+                try:
+                    val = getattr(img_obj, attr)
+                    if val:
+                        data_bytes = val
+                        break
+                except Exception:
+                    continue
+            # 2) Method-based bytes
+            if data_bytes is None:
+                for method in ("to_bytes", "as_bytes", "as_png_bytes"):
+                    try:
+                        fn = getattr(img_obj, method, None)
+                        if callable(fn):
+                            out = fn()
+                            if out:
+                                data_bytes = out
+                                break
+                    except Exception:
+                        continue
+            # 3) PIL fallback
             if data_bytes is None:
                 pil_image = getattr(img_obj, "_pil_image", None) or getattr(img_obj, "image", None)
                 if pil_image is not None:
@@ -1678,45 +1720,29 @@ async def create_image(
                     buf = _io.BytesIO()
                     pil_image.save(buf, format=output_format.upper())
                     data_bytes = buf.getvalue()
-            # 3) File save fallback via provided API
+            # 4) File save fallback
             if data_bytes is None:
-                temp_ext = {
-                    "png": ".png",
-                    "jpeg": ".jpg",
-                    "webp": ".webp",
-                }.get(output_format, ".png")
+                temp_ext = {"png": ".png", "jpeg": ".jpg", "webp": ".webp"}.get(output_format, ".png")
                 temp_file = Path(tempfile.gettempdir()) / f"vertex_img_{uuid.uuid4().hex[:8]}{temp_ext}"
                 try:
-                    if hasattr(img_obj, "save"):
-                        # Try common save signatures
+                    saver = getattr(img_obj, "save", None)
+                    if callable(saver):
                         try:
-                            img_obj.save(location=str(temp_file))
+                            saver(location=str(temp_file))
                         except TypeError:
                             try:
-                                img_obj.save(filename=str(temp_file))
+                                saver(filename=str(temp_file))
                             except Exception:
-                                img_obj.save(str(temp_file))
-                        data_bytes = temp_file.read_bytes()
-                    else:
-                        raise ValueError("save() not available on Vertex image object")
-                except Exception:
-                    if temp_file.exists():
-                        try:
+                                saver(str(temp_file))
+                        if temp_file.exists():
                             data_bytes = temp_file.read_bytes()
-                        except Exception:
-                            pass
+                except Exception:
+                    pass
+
             if not data_bytes:
                 raise ValueError("Failed to extract image bytes from Vertex response")
             b64_data = base64.b64encode(data_bytes).decode()
-            # Reuse common output handler
-            return await handle_image_output(
-                b64_data,
-                output_format,
-                output_mode,
-                file_path,
-                temp_dir,
-                ctx
-            )
+            return await handle_image_output(b64_data, output_format, output_mode, file_path, temp_dir, ctx)
         except Exception as e:
             if ctx: await ctx.error(f"Vertex image generation failed: {str(e)}")
             raise ValueError(f"Failed to generate image with Vertex AI: {str(e)}")
