@@ -1662,22 +1662,51 @@ async def create_image(
             images = imagen_model.generate_images(prompt=prompt, number_of_images=1)
             img_obj = images[0] if isinstance(images, list) else images
             data_bytes = None
+            # 1) Direct bytes properties (preferred)
             try:
                 if hasattr(img_obj, "image_bytes") and img_obj.image_bytes:
                     data_bytes = img_obj.image_bytes
-                elif hasattr(img_obj, "_image_bytes") and img_obj._image_bytes:
-                    data_bytes = img_obj._image_bytes
+                elif hasattr(img_obj, "_image_bytes") and getattr(img_obj, "_image_bytes"):
+                    data_bytes = getattr(img_obj, "_image_bytes")
             except Exception:
                 data_bytes = None
+            # 2) PIL fallback
             if data_bytes is None:
-                # Try PIL fallback if present on object
                 pil_image = getattr(img_obj, "_pil_image", None) or getattr(img_obj, "image", None)
-                if pil_image is None:
-                    raise ValueError("Failed to extract image bytes from Vertex response")
-                import io as _io
-                buf = _io.BytesIO()
-                pil_image.save(buf, format=output_format.upper())
-                data_bytes = buf.getvalue()
+                if pil_image is not None:
+                    import io as _io
+                    buf = _io.BytesIO()
+                    pil_image.save(buf, format=output_format.upper())
+                    data_bytes = buf.getvalue()
+            # 3) File save fallback via provided API
+            if data_bytes is None:
+                temp_ext = {
+                    "png": ".png",
+                    "jpeg": ".jpg",
+                    "webp": ".webp",
+                }.get(output_format, ".png")
+                temp_file = Path(tempfile.gettempdir()) / f"vertex_img_{uuid.uuid4().hex[:8]}{temp_ext}"
+                try:
+                    if hasattr(img_obj, "save"):
+                        # Try common save signatures
+                        try:
+                            img_obj.save(location=str(temp_file))
+                        except TypeError:
+                            try:
+                                img_obj.save(filename=str(temp_file))
+                            except Exception:
+                                img_obj.save(str(temp_file))
+                        data_bytes = temp_file.read_bytes()
+                    else:
+                        raise ValueError("save() not available on Vertex image object")
+                except Exception:
+                    if temp_file.exists():
+                        try:
+                            data_bytes = temp_file.read_bytes()
+                        except Exception:
+                            pass
+            if not data_bytes:
+                raise ValueError("Failed to extract image bytes from Vertex response")
             b64_data = base64.b64encode(data_bytes).decode()
             # Reuse common output handler
             return await handle_image_output(
