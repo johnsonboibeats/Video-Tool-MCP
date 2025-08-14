@@ -444,6 +444,31 @@ def initialize_app_context():
                 drive_service = None
         
         # Initialize Vertex AI (optional)
+        # Support credentials via GOOGLE_APPLICATION_CREDENTIALS_JSON on platforms like Railway
+        try:
+            adc_json = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON")
+            adc_path_env = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+            if adc_json and not adc_path_env:
+                try:
+                    # Determine content: raw JSON or base64-encoded
+                    content = adc_json
+                    if not adc_json.strip().startswith("{"):
+                        try:
+                            decoded = base64.b64decode(adc_json).decode("utf-8", errors="ignore")
+                            if decoded.strip().startswith("{"):
+                                content = decoded
+                        except Exception:
+                            pass
+                    # Write to temp file
+                    adc_path = Path(tempfile.gettempdir()) / "vertex_adc.json"
+                    adc_path.write_text(content)
+                    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(adc_path)
+                    logger.info(f"Wrote GOOGLE_APPLICATION_CREDENTIALS to {adc_path}")
+                except Exception as e:
+                    logger.warning(f"Failed to materialize GOOGLE_APPLICATION_CREDENTIALS_JSON: {e}")
+        except Exception:
+            pass
+
         vertex_project = os.getenv("GOOGLE_CLOUD_PROJECT") or os.getenv("VERTEX_PROJECT")
         vertex_location = os.getenv("VERTEX_LOCATION", "us-central1")
         vertex_initialized = False
