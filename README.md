@@ -68,6 +68,12 @@ For detailed OAuth documentation, see [OAUTH_IMPLEMENTATION.md](OAUTH_IMPLEMENTA
 - `GOOGLE_APPLICATION_CREDENTIALS`: Path to ADC JSON file (in Railway, provide JSON via env and write it to a temp file at startup)
 
 Note: Vertex configuration is used only by `create_image` when `CREATE_IMAGE_MODEL` selects a Vertex model. Other tools continue using OpenAI.
+
+#### Vertex AI (Gemini) for analyze_image (Optional)
+- `ANALYZE_IMAGE_MODEL`: Default model for the `analyze_image` tool only. Examples:
+  - `gpt-4o` (default)
+  - `vertex:gemini-2.5-pro`
+  - Provide `GOOGLE_CLOUD_PROJECT`, `VERTEX_LOCATION`, and ADC as above.
 - `PORT`: Server port (default: 8080)
 - `ALLOWED_ORIGINS`: CORS allowed origins (default: claude.ai domains)
 - `MAX_REQUESTS_PER_MINUTE`: Rate limiting (default: 100)

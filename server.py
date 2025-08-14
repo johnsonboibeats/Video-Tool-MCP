@@ -81,6 +81,19 @@ except Exception:
     VERTEX_AVAILABLE = False
     logger.warning("Vertex AI SDK not available - Imagen models will be disabled")
 
+# Vertex AI (Gemini) generative models (for analysis) with graceful fallback
+try:
+    # Prefer GA module path
+    from vertexai.generative_models import GenerativeModel, Part  # type: ignore
+    VERTEX_GEN_AVAILABLE = True
+except Exception:
+    try:
+        from vertexai.preview.generative_models import GenerativeModel, Part  # type: ignore
+        VERTEX_GEN_AVAILABLE = True
+    except Exception:
+        VERTEX_GEN_AVAILABLE = False
+        logger.warning("Vertex generative models not available - Gemini analysis will be disabled")
+
 # Google Drive imports with graceful fallbacks
 try:
     from google.auth.transport.requests import Request
@@ -2376,7 +2389,7 @@ async def image_metadata(
 async def analyze_image(
     image: str,
     prompt: str = "Describe this image in detail, including objects, people, scenery, colors, mood, and any text visible.",
-    model: str = "gpt-4o",
+    model: str = "auto",
     max_tokens: int = 1000,
     detail: Literal["low", "high", "auto"] = "auto",
     ctx: Context = None
@@ -2396,8 +2409,9 @@ async def analyze_image(
         Detailed analysis of the image content
     """
     app_context = get_app_context()
-    client = app_context.openai_client
-    check_openai_client(client)
+    # Resolve model selection (env-scoped to analyze_image only)
+    env_model = os.getenv("ANALYZE_IMAGE_MODEL")
+    selected_model = model if model and model != "auto" else (env_model or "gpt-4o")
     
     try:
         if ctx: await ctx.info(f"Analyzing image with model {model}...")
@@ -2425,9 +2439,36 @@ async def analyze_image(
             base64_data, mime_type = await load_image_as_base64(file_path)
             image_url = f"data:{mime_type};base64,{base64_data}"
         
-        # Call Vision API
+        # Vertex Gemini path
+        if selected_model.startswith("vertex:") and VERTEX_GEN_AVAILABLE and app_context.vertex_initialized:
+            try:
+                model_id = selected_model.split(":", 1)[1]
+                if ctx: await ctx.info(f"Analyzing image with Vertex Gemini model: {model_id}")
+                gen = GenerativeModel(model_id)
+                parts = [Part.from_text(prompt), Part.from_data(mime_type=image_url.split(';')[0].split(':',1)[1], data=base64.b64decode(image_url.split(',')[1]))]
+                resp = gen.generate_content(parts)
+                # Handle streaming vs non-streaming
+                text = None
+                if hasattr(resp, "text") and resp.text:
+                    text = resp.text
+                elif hasattr(resp, "candidates") and resp.candidates:
+                    try:
+                        text = resp.candidates[0].content.parts[0].text
+                    except Exception:
+                        text = None
+                if not text:
+                    text = str(resp)
+                if ctx: await ctx.info("Image analysis completed successfully (Vertex)")
+                return text
+            except Exception as ve:
+                if ctx: await ctx.info(f"Vertex analysis failed, falling back to OpenAI: {ve}")
+                # Fallback to OpenAI below
+        
+        # OpenAI Vision path
+        client = app_context.openai_client
+        check_openai_client(client)
         response = await client.chat.completions.create(
-            model=model,
+            model=selected_model if not selected_model.startswith("vertex:") else "gpt-4o",
             messages=[
                 {
                     "role": "user",
@@ -2445,9 +2486,8 @@ async def analyze_image(
             ],
             max_tokens=max_tokens
         )
-        
         analysis = response.choices[0].message.content
-        if ctx: await ctx.info("Image analysis completed successfully")
+        if ctx: await ctx.info("Image analysis completed successfully (OpenAI)")
         return analysis
         
     except Exception as e:
