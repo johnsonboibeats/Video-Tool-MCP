@@ -1334,23 +1334,36 @@ async def handle_image_output(
         return str(save_path)
         
     else:  # url mode
-        # Create download URL
-        if ctx: await ctx.info("Creating download URL")
+        # Upload to Google Drive instead of Railway storage
+        if ctx: await ctx.info("Uploading image to Google Drive")
         
-        # Save to publicly accessible download directory
+        # Generate filename for the image
         filename = f"generated_{uuid.uuid4().hex[:8]}.{output_format}"
-        download_path = temp_dir / "downloads" / filename
-        download_path.parent.mkdir(exist_ok=True)
         
-        # Clean up old files before saving new one
-        cleanup_temp_dir(temp_dir, max_age_hours=24, max_total_size_mb=100)
+        # Upload to Google Drive using existing upload_image function
+        upload_result = await upload_image(
+            image_data=b64_data,
+            filename=filename,
+            description="Generated image via Image-Tool-MCP Server",
+            ctx=ctx
+        )
         
-        await save_base64_image(b64_data, download_path, output_format.upper())
+        if not upload_result.get("success", False):
+            # Fallback to Railway storage if Drive upload fails
+            if ctx: await ctx.info("Drive upload failed, falling back to Railway storage")
+            download_path = temp_dir / "downloads" / filename
+            download_path.parent.mkdir(exist_ok=True)
+            cleanup_temp_dir(temp_dir, max_age_hours=24, max_total_size_mb=100)
+            await save_base64_image(b64_data, download_path, output_format.upper())
+            download_url = f"https://web-production-472cb.up.railway.app/download/{filename}"
+            if ctx: await ctx.info(f"Fallback: Image available at: {download_url}")
+            return f"Image generated successfully! Download URL: {download_url}"
         
-        # Return download URL
-        download_url = f"https://web-production-472cb.up.railway.app/download/{filename}"
-        if ctx: await ctx.info(f"Full-size image available at: {download_url}")
-        return f"Image generated successfully! Download URL: {download_url}"
+        # Return Google Drive direct download URL
+        drive_url = upload_result["direct_download_url"]
+        web_view_link = upload_result["web_view_link"]
+        if ctx: await ctx.info(f"Image uploaded to Google Drive: {web_view_link}")
+        return f"Image generated successfully! Google Drive URL: {drive_url}"
 
 def cleanup_downloads_dir(temp_dir: Path, max_age_hours: int = 24, max_total_size_mb: int = 100) -> None:
     """Specialized cleanup for the downloads subdir; kept for parity with logs."""
@@ -1839,24 +1852,36 @@ async def create_image(
                 if ctx: await ctx.info(f"Image saved to: {save_path}")
                 
             elif output_mode == "url":
-                # Create download URL (for remote usage or when explicitly requested)
-                if ctx: await ctx.info("Creating download URL")
+                # Upload to Google Drive instead of Railway storage
+                if ctx: await ctx.info("Uploading image to Google Drive")
                 
-                # Save to publicly accessible download directory
+                # Generate filename for the image
                 filename = f"generated_{uuid.uuid4().hex[:8]}.{output_format}"
-                download_path = temp_dir / "downloads" / filename
-                download_path.parent.mkdir(exist_ok=True)
                 
-                # Clean up old files before saving new one
-                cleanup_temp_dir(temp_dir, max_age_hours=24, max_total_size_mb=100)
+                # Upload to Google Drive using existing upload_image function
+                upload_result = await upload_image(
+                    image_data=b64_data,
+                    filename=filename,
+                    description="Generated image via Image-Tool-MCP Server",
+                    ctx=ctx
+                )
                 
-                await save_base64_image(b64_data, download_path, output_format.upper())
-                
-                # Return download URL
-                download_url = f"https://web-production-472cb.up.railway.app/download/{filename}"
-                images.append(f"Image generated successfully! Download URL: {download_url}")
-                
-                if ctx: await ctx.info(f"Full-size image available at: {download_url}")
+                if not upload_result.get("success", False):
+                    # Fallback to Railway storage if Drive upload fails
+                    if ctx: await ctx.info("Drive upload failed, falling back to Railway storage")
+                    download_path = temp_dir / "downloads" / filename
+                    download_path.parent.mkdir(exist_ok=True)
+                    cleanup_temp_dir(temp_dir, max_age_hours=24, max_total_size_mb=100)
+                    await save_base64_image(b64_data, download_path, output_format.upper())
+                    download_url = f"https://web-production-472cb.up.railway.app/download/{filename}"
+                    images.append(f"Image generated successfully! Download URL: {download_url}")
+                    if ctx: await ctx.info(f"Fallback: Image available at: {download_url}")
+                else:
+                    # Use Google Drive direct download URL
+                    drive_url = upload_result["direct_download_url"]
+                    web_view_link = upload_result["web_view_link"]
+                    images.append(f"Image generated successfully! Google Drive URL: {drive_url}")
+                    if ctx: await ctx.info(f"Image uploaded to Google Drive: {web_view_link}")
                 
             # Note: base64 mode removed - not needed for either remote or local usage
         
