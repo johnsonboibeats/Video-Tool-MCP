@@ -1344,6 +1344,7 @@ async def handle_image_output(
         upload_result = await _upload_image_internal(
             image_data=b64_data,
             filename=filename,
+            folder_id=folder_id,
             description="Generated image via Image-Tool-MCP Server",
             ctx=ctx
         )
@@ -1624,7 +1625,8 @@ async def create_image(
     moderation: Literal["auto", "low"] = "auto",
     n: int = 1,
     output_mode: Optional[Literal["file", "url"]] = None,
-    file_path: Optional[str] = None
+    file_path: Optional[str] = None,
+    folder_id: Optional[str] = None
 ) -> Union[str, list[str]]:
     """Generate images from text prompts using OpenAI's latest gpt-image-1 model.
     
@@ -1643,6 +1645,7 @@ async def create_image(
         n: Number of images to generate (1-10)
         output_mode: OPTIONAL - Auto-detected ('url' for remote, 'file' for local)
         file_path: OPTIONAL - Only needed for local file mode
+        folder_id: OPTIONAL - Google Drive folder ID to upload images to
         
     Returns:
         Download URLs (remote) or file paths (local)
@@ -1862,6 +1865,7 @@ async def create_image(
                 upload_result = await _upload_image_internal(
                     image_data=b64_data,
                     filename=filename,
+                    folder_id=folder_id,
                     description="Generated image via Image-Tool-MCP Server",
                     ctx=ctx
                 )
@@ -2781,39 +2785,6 @@ async def _upload_image_internal(
         logger.error(error_msg)
         return {"error": error_msg, "success": False}
 
-@mcp.tool()
-async def upload_image(
-    image_path: Optional[str] = None,
-    image_data: Optional[str] = None,
-    image_url: Optional[str] = None,
-    filename: Optional[str] = None,
-    folder_id: Optional[str] = None,
-    description: Optional[str] = None,
-    ctx: Context = None
-) -> Dict[str, Any]:
-    """
-    Upload an image to Google Drive.
-    
-    Args:
-        image_path: Local image path (for local files)
-        image_data: Base64 encoded image data (for generated images)
-        image_url: HTTP URL to image (for remote images)
-        filename: Name for the uploaded file
-        folder_id: Google Drive folder ID (default: root)
-        description: Optional description for the image
-        
-    Returns:
-        Upload result with file ID and metadata
-    """
-    return await _upload_image_internal(
-        image_path=image_path,
-        image_data=image_data,
-        image_url=image_url,
-        filename=filename,
-        folder_id=folder_id,
-        description=description,
-        ctx=ctx
-    )
 
 @mcp.tool()
 async def get_image_from_drive(
