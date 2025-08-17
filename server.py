@@ -1618,7 +1618,7 @@ async def get_file_path(file_input: str) -> str:
 async def create_image(
     prompt: str,
     ctx: Context = None,
-    model: Literal["gpt-image-1", "auto", "vertex:imagen-4.0-ultra-generate-preview-06-06"] = "auto",
+    model: Literal["gpt-image-1", "auto", "vertex:imagen-4.0-ultra-generate-001", "vertex:imagen-3.0-capable-generate-001", "vertex:imagen-3.0-generate-001", "vertex:imagen-3.0-fast-generate-001"] = "auto",
     size: Literal["1024x1024", "1536x1024", "1024x1536", "auto"] = "auto",
     quality: Literal["auto", "high", "medium", "low"] = "auto",
     background: Literal["transparent", "opaque", "auto"] = "auto", 
