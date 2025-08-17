@@ -1298,74 +1298,75 @@ async def jwks_endpoint(request: Request):
 # UTILITY FUNCTIONS
 # =============================================================================
 
-async def handle_image_output(
-    b64_data: str, 
-    output_format: str, 
-    output_mode: Optional[str], 
-    file_path: Optional[str],
-    temp_dir: Path,
-    ctx: Context = None,
-    folder_id: Optional[str] = None
+async def _upload_to_drive(
+    file_data: bytes,
+    filename: str, 
+    description: str,
+    folder_id: str = "1y8eWyr68gPTiFTS2GuNODZp9zx4kg4FC",  # Downloads folder default
+    ctx: Context = None
 ) -> str:
-    """Standardized image output handling for all tools"""
-    
-    # Auto-detect output mode based on transport if not specified
-    if output_mode is None:
-        output_mode = get_default_output_mode()
-    
-    # FORCE appropriate mode based on transport
-    if _transport_mode != "stdio":
-        # Remote: Always use URLs for best UX
-        if output_mode != "url":
-            if ctx: await ctx.info(f"Using URL mode for remote usage (better UX)")
-            output_mode = "url"
-    else:
-        # Local: Always use files for direct filesystem access
-        if output_mode != "file":
-            if ctx: await ctx.info(f"Using file mode for local usage (direct filesystem access)")
-            output_mode = "file"
-    
-    if output_mode == "file":
-        # Save to specified file path
-        if not file_path:
-            raise ValueError("file_path required for file output")
-        save_path = Path(file_path)
-        await save_base64_image(b64_data, save_path, output_format.upper())
-        if ctx: await ctx.info(f"Image saved to: {save_path}")
-        return str(save_path)
+    """Unified helper to upload any file type to Google Drive"""
+    try:
+        app_context = get_app_context()
+        drive_service = app_context.drive_service
         
-    else:  # url mode
-        # Upload to Google Drive instead of Railway storage
-        if ctx: await ctx.info("Uploading image to Google Drive")
+        if not drive_service:
+            raise ValueError("Google Drive not configured. Please set GOOGLE_OAUTH_TOKEN")
         
-        # Generate filename for the image
-        filename = f"generated_{uuid.uuid4().hex[:8]}.{output_format}"
+        if ctx:
+            await ctx.info(f"Uploading {filename} to Google Drive")
         
-        # Upload to Google Drive using internal upload function
-        upload_result = await _upload_image_internal(
-            image_data=b64_data,
-            filename=filename,
-            folder_id=folder_id,
-            description="Generated image via Image-Tool-MCP Server",
-            ctx=ctx
+        # Create temporary file from bytes
+        temp_path = app_context.temp_dir / f"upload_{uuid.uuid4().hex[:8]}_{filename}"
+        temp_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Write bytes to temp file
+        async with aiofiles.open(temp_path, 'wb') as f:
+            await f.write(file_data)
+        
+        # Upload to Google Drive
+        file_metadata = {
+            'name': filename,
+            'description': description,
+            'parents': [folder_id]
+        }
+        
+        media = MediaFileUpload(str(temp_path), resumable=True)
+        
+        request = drive_service.files().create(
+            body=file_metadata,
+            media_body=media,
+            fields="id, name, mimeType, size, createdTime, webViewLink"
         )
         
-        if not upload_result.get("success", False):
-            # Fallback to Railway storage if Drive upload fails
-            if ctx: await ctx.info("Drive upload failed, falling back to Railway storage")
-            download_path = temp_dir / "downloads" / filename
-            download_path.parent.mkdir(exist_ok=True)
-            cleanup_temp_dir(temp_dir, max_age_hours=24, max_total_size_mb=100)
-            await save_base64_image(b64_data, download_path, output_format.upper())
-            download_url = f"https://web-production-472cb.up.railway.app/download/{filename}"
-            if ctx: await ctx.info(f"Fallback: Image available at: {download_url}")
-            return f"Image generated successfully! Download URL: {download_url}"
+        response = None
+        while response is None:
+            status, response = request.next_chunk()
         
-        # Return Google Drive web view URL
-        drive_url = upload_result["direct_download_url"]
-        web_view_link = upload_result["web_view_link"]
-        if ctx: await ctx.info(f"Image download URL: {drive_url}")
-        return f"Image generated successfully! Google Drive URL: {web_view_link}"
+        # Clean up temp file
+        try:
+            temp_path.unlink()
+        except:
+            pass
+        
+        web_view_link = response['webViewLink']
+        if ctx:
+            await ctx.info(f"Uploaded successfully: {web_view_link}")
+            
+        return web_view_link
+        
+    except Exception as e:
+        # Clean up temp file on error
+        try:
+            if 'temp_path' in locals():
+                temp_path.unlink()
+        except:
+            pass
+        
+        error_msg = f"Failed to upload {filename}: {str(e)}"
+        if ctx:
+            await ctx.error(error_msg)
+        raise ValueError(error_msg)
 
 def cleanup_downloads_dir(temp_dir: Path, max_age_hours: int = 24, max_total_size_mb: int = 100) -> None:
     """Specialized cleanup for the downloads subdir; kept for parity with logs."""
@@ -1625,14 +1626,11 @@ async def create_image(
     output_compression: Optional[int] = None,
     moderation: Literal["auto", "low"] = "auto",
     n: int = 1,
-    output_mode: Optional[Literal["file", "url"]] = None,
-    file_path: Optional[str] = None,
     folder_id: Optional[str] = None
 ) -> Union[str, list[str]]:
     """Generate images from text prompts using OpenAI's latest gpt-image-1 model.
     
-    REMOTE USAGE: Always returns download URLs (best UX, no connection issues).
-    LOCAL USAGE: Always returns file paths (direct filesystem access).
+    Automatically uploads all generated images to Google Drive and returns web view URLs.
     
     Args:
         prompt: Text description of the image to generate (max 32000 chars)
@@ -1644,38 +1642,17 @@ async def create_image(
         output_compression: Compression level 0-100 (webp/jpeg only)
         moderation: Content moderation level
         n: Number of images to generate (1-10)
-        output_mode: OPTIONAL - Auto-detected ('url' for remote, 'file' for local)
-        file_path: OPTIONAL - Only needed for local file mode
-        folder_id: OPTIONAL - Google Drive folder ID to upload images to
+        folder_id: Google Drive folder ID (defaults to Downloads folder)
         
     Returns:
-        Download URLs (remote) or file paths (local)
+        Google Drive web view URL(s) for generated images
     """
     # Get application context
     app_context = get_app_context()
-    temp_dir = app_context.temp_dir
 
     # Determine model selection (scoped to create_image only)
     env_model = os.getenv("CREATE_IMAGE_MODEL")
     selected_model = model if model and model != "auto" else (env_model or "gpt-image-1")
-    
-    # Auto-detect output mode based on transport if not specified
-    if output_mode is None:
-        output_mode = get_default_output_mode()
-    
-    # FORCE appropriate mode based on transport
-    if _transport_mode != "stdio":
-        # Remote: Always use URLs for best UX
-        if output_mode != "url":
-            if ctx: await ctx.info(f"Using URL mode for remote usage (better UX)")
-            output_mode = "url"
-    else:
-        # Local: Always use files for direct filesystem access
-        if output_mode != "file":
-            if ctx: await ctx.info(f"Using file mode for local usage (direct filesystem access)")
-            output_mode = "file"
-    
-    # No size limitations needed for URL mode (files stored on server)
 
     # Vertex (Imagen) path
     if selected_model.startswith("vertex:") or selected_model == "imagen-4.0-ultra-generate-preview-06-06":
@@ -1772,7 +1749,20 @@ async def create_image(
             if not data_bytes:
                 raise ValueError("Failed to extract image bytes from Vertex response")
             b64_data = base64.b64encode(data_bytes).decode()
-            return await handle_image_output(b64_data, output_format, output_mode, file_path, temp_dir, ctx)
+            # Convert base64 to bytes
+            file_data = base64.b64decode(b64_data)
+            
+            # Generate filename
+            filename = f"generated_{uuid.uuid4().hex[:8]}.{output_format}"
+            
+            # Upload to Google Drive
+            return await _upload_to_drive(
+                file_data=file_data,
+                filename=filename,
+                description="Generated image via Vertex AI",
+                folder_id=folder_id or "1y8eWyr68gPTiFTS2GuNODZp9zx4kg4FC",
+                ctx=ctx
+            )
         except Exception as e:
             if ctx: await ctx.error(f"Vertex image generation failed: {str(e)}")
             raise ValueError(f"Failed to generate image with Vertex AI: {str(e)}")
@@ -1786,12 +1776,6 @@ async def create_image(
         
     if background == "transparent" and output_format not in ["png", "webp"]:
         raise ValueError("Transparent background requires PNG or WebP format")
-        
-    if output_mode == "file" and not file_path:
-        raise ValueError("file_path is required when output_mode is 'file'")
-        
-    if file_path and not os.path.isabs(file_path):
-        raise ValueError("file_path must be an absolute path")
     
     # Progress tracking for batch generation
     if n > 1 and ctx:
@@ -1834,7 +1818,6 @@ async def create_image(
         
         # Process results
         images = []
-        file_paths = []
         
         for i, image_data in enumerate(response.data):
             if n > 1 and ctx:
@@ -1842,66 +1825,34 @@ async def create_image(
             
             b64_data = image_data.b64_json
             
-            if output_mode == "file":
-                # Save to file
-                if n > 1:
-                    # Multiple files: add index
-                    path = Path(file_path)
-                    save_path = path.parent / f"{path.stem}_{i+1}{path.suffix}"
-                else:
-                    save_path = Path(file_path)
-                
-                await save_base64_image(b64_data, save_path, output_format.upper())
-                file_paths.append(str(save_path))
-                if ctx: await ctx.info(f"Image saved to: {save_path}")
-                
-            elif output_mode == "url":
-                # Upload to Google Drive instead of Railway storage
-                if ctx: await ctx.info("Uploading image to Google Drive")
-                
-                # Generate filename for the image
+            # Generate filename for the image
+            if n > 1:
+                filename = f"generated_{uuid.uuid4().hex[:8]}_{i+1}.{output_format}"
+            else:
                 filename = f"generated_{uuid.uuid4().hex[:8]}.{output_format}"
-                
-                # Upload to Google Drive using internal upload function
-                upload_result = await _upload_image_internal(
-                    image_data=b64_data,
-                    filename=filename,
-                    folder_id=folder_id,
-                    description="Generated image via Image-Tool-MCP Server",
-                    ctx=ctx
-                )
-                
-                if not upload_result.get("success", False):
-                    # Fallback to Railway storage if Drive upload fails
-                    if ctx: await ctx.info("Drive upload failed, falling back to Railway storage")
-                    download_path = temp_dir / "downloads" / filename
-                    download_path.parent.mkdir(exist_ok=True)
-                    cleanup_temp_dir(temp_dir, max_age_hours=24, max_total_size_mb=100)
-                    await save_base64_image(b64_data, download_path, output_format.upper())
-                    download_url = f"https://web-production-472cb.up.railway.app/download/{filename}"
-                    images.append(f"Image generated successfully! Download URL: {download_url}")
-                    if ctx: await ctx.info(f"Fallback: Image available at: {download_url}")
-                else:
-                    # Use Google Drive web view URL
-                    drive_url = upload_result["direct_download_url"]
-                    web_view_link = upload_result["web_view_link"]
-                    images.append(f"Image generated successfully! Google Drive URL: {web_view_link}")
-                    if ctx: await ctx.info(f"Image download URL: {drive_url}")
+            
+            # Convert base64 to bytes
+            file_data = base64.b64decode(b64_data)
+            
+            # Upload to Google Drive (Downloads folder default, or custom folder_id)
+            web_view_link = await _upload_to_drive(
+                file_data=file_data,
+                filename=filename,
+                description="Generated image via Image-Tool-MCP Server",
+                folder_id=folder_id or "1y8eWyr68gPTiFTS2GuNODZp9zx4kg4FC",
+                ctx=ctx
+            )
+            
+            images.append(web_view_link)
                 
             # Note: base64 mode removed - not needed for either remote or local usage
         
         # Log response preparation
         if ctx: 
-            if output_mode == "file":
-                await ctx.info(f"Returning file paths: {file_paths}")
-            else:  # url mode
-                await ctx.info(f"Returning {len(images)} download URL(s)")
+            await ctx.info(f"Returning {len(images)} Google Drive URL(s)")
         
         # Return results
-        if output_mode == "file":
-            return file_paths if n > 1 else file_paths[0]
-        else:
-            return images if n > 1 else images[0]
+        return images if n > 1 else images[0]
             
     except Exception as e:
         if ctx: await ctx.error(f"Image generation failed: {str(e)}")
@@ -1921,15 +1872,12 @@ async def edit_image(
     quality: Literal["auto", "high", "medium", "low"] = "auto",
     output_format: Literal["png", "jpeg", "webp"] = "png",
     n: int = 1,
-    output_mode: Optional[Literal["file", "url"]] = None,
-    file_path: Optional[str] = None,
     folder_id: Optional[str] = None,
     ctx: Context = None
 ) -> Union[str, list[str]]:
     """Edit existing images using masks and text prompts.
     
-    REMOTE USAGE: Always returns download URLs (best UX, no connection issues).
-    LOCAL USAGE: Always returns file paths (direct filesystem access).
+    Automatically uploads all edited images to Google Drive and returns web view URLs.
     
     Args:
         image: Original image (file path or base64)
@@ -1940,12 +1888,10 @@ async def edit_image(
         quality: Generation quality level
         output_format: Image format
         n: Number of images to generate (1-10)
-        output_mode: OPTIONAL - Auto-detected ('url' for remote, 'file' for local)
-        file_path: OPTIONAL - Only needed for local file mode
-        folder_id: OPTIONAL - Google Drive folder ID to upload edited images to
+        folder_id: Google Drive folder ID (defaults to Downloads folder)
         
     Returns:
-        Download URLs (remote) or file paths (local)
+        Google Drive web view URL(s) for edited images
     """
     app_context = get_app_context()
     client = app_context.openai_client
@@ -2087,8 +2033,20 @@ async def edit_image(
             # Handle multiple images if n > 1
             if n == 1:
                 b64_data = response_data["data"][0]["b64_json"]
-                result = await handle_image_output(
-                    b64_data, output_format, output_mode, file_path, temp_dir, ctx, folder_id
+                
+                # Convert base64 to bytes
+                file_data = base64.b64decode(b64_data)
+                
+                # Generate filename
+                filename = f"edited_{uuid.uuid4().hex[:8]}.{output_format}"
+                
+                # Upload to Google Drive
+                result = await _upload_to_drive(
+                    file_data=file_data,
+                    filename=filename,
+                    description="Edited image via Image-Tool-MCP Server",
+                    folder_id=folder_id or "1y8eWyr68gPTiFTS2GuNODZp9zx4kg4FC",
+                    ctx=ctx
                 )
             else:
                 # Handle multiple images
@@ -2096,14 +2054,19 @@ async def edit_image(
                 for i, img_data in enumerate(response_data["data"]):
                     b64_data = img_data["b64_json"]
                     
-                    # For multiple images, modify file path with index
-                    variation_file_path = file_path
-                    if file_path and n > 1:
-                        path = Path(file_path)
-                        variation_file_path = str(path.parent / f"{path.stem}_{i+1}{path.suffix}")
+                    # Convert base64 to bytes
+                    file_data = base64.b64decode(b64_data)
                     
-                    result = await handle_image_output(
-                        b64_data, output_format, output_mode, variation_file_path, temp_dir, ctx, folder_id
+                    # Generate filename with index
+                    filename = f"edited_{uuid.uuid4().hex[:8]}_{i+1}.{output_format}"
+                    
+                    # Upload to Google Drive
+                    result = await _upload_to_drive(
+                        file_data=file_data,
+                        filename=filename,
+                        description=f"Edited image {i+1} via Image-Tool-MCP Server",
+                        folder_id=folder_id or "1y8eWyr68gPTiFTS2GuNODZp9zx4kg4FC",
+                        ctx=ctx
                     )
                     results.append(result)
                 
@@ -2127,15 +2090,12 @@ async def generate_variations(
     size: Literal["1024x1024", "1536x1024", "1024x1536", "auto"] = "auto",
     quality: Literal["auto", "high", "medium", "low"] = "auto",
     output_format: Literal["png", "jpeg", "webp"] = "png",
-    output_mode: Optional[Literal["file", "url"]] = None,
-    file_path: Optional[str] = None,
     folder_id: Optional[str] = None,
     ctx: Context = None
 ) -> Union[str, list[str]]:
     """Generate variations of existing images.
     
-    REMOTE USAGE: Always returns download URLs (best UX, no connection issues).
-    LOCAL USAGE: Always returns file paths (direct filesystem access).
+    Automatically uploads all generated variations to Google Drive and returns web view URLs.
     
     Args:
         image: Original image (file path or base64)
@@ -2144,20 +2104,14 @@ async def generate_variations(
         size: Image dimensions
         quality: Generation quality level
         output_format: Image format
-        output_mode: OPTIONAL - Auto-detected ('url' for remote, 'file' for local)
-        file_path: OPTIONAL - Only needed for local file mode
-        folder_id: OPTIONAL - Google Drive folder ID to upload variations to
+        folder_id: Google Drive folder ID (defaults to Downloads folder)
         
     Returns:
-        Download URLs (remote) or file paths (local)
+        Google Drive web view URL(s) for generated variations
     """
     app_context = get_app_context()
     client = app_context.openai_client
     temp_dir = app_context.temp_dir
-    
-    # Auto-detect output mode based on transport if not specified
-    if output_mode is None:
-        output_mode = get_default_output_mode()
     
     if n < 1 or n > 10:
         raise ValueError("Number of variations must be between 1 and 10")
@@ -2212,14 +2166,22 @@ async def generate_variations(
         for i, img_data in enumerate(response.data):
             b64_data = img_data.b64_json
             
-            # For multiple variations, modify file path with index
-            variation_file_path = file_path
-            if file_path and n > 1:
-                path = Path(file_path)
-                variation_file_path = str(path.parent / f"{path.stem}_{i+1}{path.suffix}")
+            # Convert base64 to bytes
+            file_data = base64.b64decode(b64_data)
             
-            result = await handle_image_output(
-                b64_data, output_format, output_mode, variation_file_path, temp_dir, ctx, folder_id
+            # Generate filename with index
+            if n > 1:
+                filename = f"variation_{uuid.uuid4().hex[:8]}_{i+1}.{output_format}"
+            else:
+                filename = f"variation_{uuid.uuid4().hex[:8]}.{output_format}"
+            
+            # Upload to Google Drive
+            result = await _upload_to_drive(
+                file_data=file_data,
+                filename=filename,
+                description=f"Image variation {i+1 if n > 1 else ''} via Image-Tool-MCP Server",
+                folder_id=folder_id or "1y8eWyr68gPTiFTS2GuNODZp9zx4kg4FC",
+                ctx=ctx
             )
             results.append(result)
         
@@ -2231,76 +2193,13 @@ async def generate_variations(
         logger.error(f"generate_variations error: {e}")
         raise ValueError(error_msg)
 
-@mcp.tool()
-async def extract_text(
-    image: str,
-    language: Optional[str] = None,
-    ctx: Context = None
-) -> Dict[str, Any]:
-    """Extract text from images using OCR.
-    
-    Supports local files and base64 data.
-    
-    Args:
-        image: Image to extract text from (file path or base64)
-        language: Language hint for better accuracy (e.g., 'eng', 'spa', 'fra')
-        
-    Returns:
-        Extracted text with confidence scores and bounding boxes
-    """
-    app_context = get_app_context()
-    client = app_context.openai_client
-    
-    image_path = await get_file_path(image)
-    image_base64, mime_type = await load_image_as_base64(image_path)
-    
-    prompt = "Extract all text from this image. If the image contains multiple languages, identify each language. Provide the text with confidence scores and approximate locations if possible."
-    
-    try:
-        if ctx: await ctx.info("Extracting text from image...")
-        
-        response = await client.chat.completions.create(
-            model="gpt-4o",
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:{mime_type};base64,{image_base64}",
-                                "detail": "high"
-                            }
-                        }
-                    ]
-                }
-            ],
-            max_tokens=2000
-        )
-        
-        text_content = response.choices[0].message.content
-        
-        return {
-            "success": True,
-            "text": text_content,
-            "source": image if isinstance(image, str) else "buffer",
-            "language_hint": language
-        }
-        
-    except Exception as e:
-        return {
-            "success": False,
-            "error": str(e),
-            "source": image if isinstance(image, str) else "buffer"
-        }
-
-
+# Removed extract_text tool - use extract_document from Document-Tool-MCP instead
+# Document-Tool-MCP has superior text extraction with Gemini 2.5 Pro
 
 @mcp.tool()
 async def batch_process(
     images: List[str],
-    operation: Literal["extract_text", "analyze_image", "image_metadata"],
+    operation: Literal["analyze_image", "image_metadata"],
     operation_params: Dict[str, Any],
     ctx: Context = None
 ) -> Dict[str, Any]:
@@ -2324,9 +2223,7 @@ async def batch_process(
             await ctx.report_progress(i + 1, total_images, f"Processing image {i + 1}/{total_images}")
         
         try:
-            if operation == "extract_text":
-                result = await extract_text(image, **operation_params)
-            elif operation == "analyze_image":
+            if operation == "analyze_image":
                 result = await analyze_image(image, **operation_params)
             elif operation == "image_metadata":
                 result = await image_metadata(image, **operation_params)
