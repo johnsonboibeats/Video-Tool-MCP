@@ -1361,11 +1361,11 @@ async def handle_image_output(
             if ctx: await ctx.info(f"Fallback: Image available at: {download_url}")
             return f"Image generated successfully! Download URL: {download_url}"
         
-        # Return Google Drive direct download URL
+        # Return Google Drive web view URL
         drive_url = upload_result["direct_download_url"]
         web_view_link = upload_result["web_view_link"]
-        if ctx: await ctx.info(f"Image uploaded to Google Drive: {web_view_link}")
-        return f"Image generated successfully! Google Drive URL: {drive_url}"
+        if ctx: await ctx.info(f"Image download URL: {drive_url}")
+        return f"Image generated successfully! Google Drive URL: {web_view_link}"
 
 def cleanup_downloads_dir(temp_dir: Path, max_age_hours: int = 24, max_total_size_mb: int = 100) -> None:
     """Specialized cleanup for the downloads subdir; kept for parity with logs."""
@@ -1882,11 +1882,11 @@ async def create_image(
                     images.append(f"Image generated successfully! Download URL: {download_url}")
                     if ctx: await ctx.info(f"Fallback: Image available at: {download_url}")
                 else:
-                    # Use Google Drive direct download URL
+                    # Use Google Drive web view URL
                     drive_url = upload_result["direct_download_url"]
                     web_view_link = upload_result["web_view_link"]
-                    images.append(f"Image generated successfully! Google Drive URL: {drive_url}")
-                    if ctx: await ctx.info(f"Image uploaded to Google Drive: {web_view_link}")
+                    images.append(f"Image generated successfully! Google Drive URL: {web_view_link}")
+                    if ctx: await ctx.info(f"Image download URL: {drive_url}")
                 
             # Note: base64 mode removed - not needed for either remote or local usage
         
