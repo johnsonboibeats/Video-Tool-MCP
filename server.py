@@ -1304,7 +1304,8 @@ async def handle_image_output(
     output_mode: Optional[str], 
     file_path: Optional[str],
     temp_dir: Path,
-    ctx: Context = None
+    ctx: Context = None,
+    folder_id: Optional[str] = None
 ) -> str:
     """Standardized image output handling for all tools"""
     
@@ -1922,6 +1923,7 @@ async def edit_image(
     n: int = 1,
     output_mode: Optional[Literal["file", "url"]] = None,
     file_path: Optional[str] = None,
+    folder_id: Optional[str] = None,
     ctx: Context = None
 ) -> Union[str, list[str]]:
     """Edit existing images using masks and text prompts.
@@ -1940,6 +1942,7 @@ async def edit_image(
         n: Number of images to generate (1-10)
         output_mode: OPTIONAL - Auto-detected ('url' for remote, 'file' for local)
         file_path: OPTIONAL - Only needed for local file mode
+        folder_id: OPTIONAL - Google Drive folder ID to upload edited images to
         
     Returns:
         Download URLs (remote) or file paths (local)
@@ -2085,7 +2088,7 @@ async def edit_image(
             if n == 1:
                 b64_data = response_data["data"][0]["b64_json"]
                 result = await handle_image_output(
-                    b64_data, output_format, output_mode, file_path, temp_dir, ctx
+                    b64_data, output_format, output_mode, file_path, temp_dir, ctx, folder_id
                 )
             else:
                 # Handle multiple images
@@ -2100,7 +2103,7 @@ async def edit_image(
                         variation_file_path = str(path.parent / f"{path.stem}_{i+1}{path.suffix}")
                     
                     result = await handle_image_output(
-                        b64_data, output_format, output_mode, variation_file_path, temp_dir, ctx
+                        b64_data, output_format, output_mode, variation_file_path, temp_dir, ctx, folder_id
                     )
                     results.append(result)
                 
@@ -2126,6 +2129,7 @@ async def generate_variations(
     output_format: Literal["png", "jpeg", "webp"] = "png",
     output_mode: Optional[Literal["file", "url"]] = None,
     file_path: Optional[str] = None,
+    folder_id: Optional[str] = None,
     ctx: Context = None
 ) -> Union[str, list[str]]:
     """Generate variations of existing images.
@@ -2142,6 +2146,7 @@ async def generate_variations(
         output_format: Image format
         output_mode: OPTIONAL - Auto-detected ('url' for remote, 'file' for local)
         file_path: OPTIONAL - Only needed for local file mode
+        folder_id: OPTIONAL - Google Drive folder ID to upload variations to
         
     Returns:
         Download URLs (remote) or file paths (local)
@@ -2214,7 +2219,7 @@ async def generate_variations(
                 variation_file_path = str(path.parent / f"{path.stem}_{i+1}{path.suffix}")
             
             result = await handle_image_output(
-                b64_data, output_format, output_mode, variation_file_path, temp_dir, ctx
+                b64_data, output_format, output_mode, variation_file_path, temp_dir, ctx, folder_id
             )
             results.append(result)
         
