@@ -382,7 +382,7 @@ async def handle_file_input(file_input: str, app_context: AppContext) -> str:
                         except Exception:
                             pass
 
-                        logger.info(f"Successfully downloaded file to: {temp_path}, size: {len(data)} bytes")
+                        logger.info(f"Successfully downloaded file to: {temp_path}, size: {downloaded} bytes")
                         return str(temp_path)
                     except Exception as e:
                         last_err = e
