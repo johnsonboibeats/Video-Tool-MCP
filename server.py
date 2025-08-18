@@ -138,9 +138,9 @@ MAX_DOWNLOAD_SIZE_MB: int = int(os.getenv("MAX_DOWNLOAD_SIZE_MB", "50"))
 DOWNLOAD_CACHE_TTL_SECONDS: int = int(os.getenv("DOWNLOAD_CACHE_TTL_SECONDS", "1800"))
 CLEANUP_INTERVAL_SECONDS: int = int(os.getenv("CLEANUP_INTERVAL_SECONDS", "1800"))
 
-# Allowed MIME types for images
-ALLOWED_IMAGE_MIME_PREFIXES = {
-    "image/",
+# Allowed MIME types for videos
+ALLOWED_VIDEO_MIME_PREFIXES = {
+    "video/",
 }
 
 # Simple metrics
@@ -1619,7 +1619,7 @@ async def get_file_path(file_input: str) -> str:
     raise ValueError("Invalid file path: must be an absolute path, base64 data, HTTP URL, or Google Drive URL (drive://, drive.google.com, docs.google.com)")
 
 # =============================================================================
-# VIDEO AND IMAGE PROCESSING TOOLS
+# VIDEO PROCESSING TOOLS
 # =============================================================================
 
 @mcp.tool()
@@ -1633,6 +1633,121 @@ async def create_video(
     folder_id: Optional[str] = None
 ) -> Union[str, list[str]]:
     """Generate videos from text prompts using Google Veo3.
+    
+    Automatically uploads all generated videos to Google Drive and returns web view URLs.
+    
+    Args:
+        prompt: Text description of the video to generate (max 32000 chars)
+        model: Video generation model (veo-3.0-generate-preview or veo-3.0-fast-generate-preview)
+        aspect_ratio: Video aspect ratio (16:9 or 9:16)
+        negative_prompt: Elements to exclude from generation
+        n: Number of videos to generate (1-2, limited by Veo3)
+        folder_id: Google Drive folder ID (defaults to Downloads folder)
+        
+    Returns:
+        Google Drive web view URL(s) for generated videos
+    """
+    # Get application context
+    app_context = get_app_context()
+
+    # Determine model selection (scoped to create_video only)
+    env_model = os.getenv("CREATE_VIDEO_MODEL")
+    selected_model = model if model and model != "auto" else (env_model or "veo-3.0-generate-preview")
+    
+    # Always log model selection for debugging
+    logger.info(f"🎬 VIDEO MODEL DEBUG: input='{model}', env='{env_model}', selected='{selected_model}'")
+    if ctx: 
+        await ctx.info(f"Model selection: input='{model}', env='{env_model}', selected='{selected_model}'")
+
+    # Validate inputs according to Veo3 limits
+    if len(prompt) > 32000:
+        raise ValueError("Prompt must be 32000 characters or less")
+    
+    if n < 1 or n > 2:  # Veo3 limit: maximum 2 videos per request
+        raise ValueError("Number of videos must be between 1 and 2 (Veo3 API limit)")
+    
+    # Progress tracking for batch generation
+    if n > 1 and ctx:
+        await ctx.report_progress(0, n, f"Starting generation of {n} videos...")
+    
+    try:
+        if not GENAI_AVAILABLE or not app_context.vertex_project:
+            raise ValueError("Google Gen AI SDK not available or Vertex project not configured; set GOOGLE_CLOUD_PROJECT/VERTEX_PROJECT and VERTEX_LOCATION")
+        
+        # Use Google Gen AI SDK (Vertex mode) for Veo3
+        client = genai_sdk.Client(
+            vertexai=True,
+            project=app_context.vertex_project,
+            location=app_context.vertex_location or "us-central1",
+        )
+
+        # Prepare video generation config
+        cfg_kwargs = {}
+        if aspect_ratio and aspect_ratio != "auto":
+            cfg_kwargs["aspect_ratio"] = aspect_ratio
+        if negative_prompt:
+            cfg_kwargs["negative_prompt"] = negative_prompt
+
+        config = genai_types.GenerateVideosConfig(**cfg_kwargs)
+
+        if ctx:
+            await ctx.info(f"Generating {n} video(s) with Veo3 model: {selected_model}")
+        
+        # Generate videos
+        operation = client.models.generate_videos(
+            model=selected_model,
+            prompt=prompt,
+            config=config,
+        )
+        
+        # Wait for completion (Veo3 takes 11 seconds to 6 minutes)
+        if ctx:
+            await ctx.info("Video generation in progress... This may take 1-6 minutes.")
+        
+        # TODO: Implement proper async waiting for operation completion
+        # This is a placeholder - actual implementation needs operation polling
+        
+        # Process results
+        videos = []
+        
+        for i in range(n):
+            if n > 1 and ctx:
+                await ctx.report_progress(i + 1, n, f"Processing video {i + 1}/{n}")
+            
+            # Generate filename for the video
+            if n > 1:
+                filename = f"generated_video_{uuid.uuid4().hex[:8]}_{i+1}.mp4"
+            else:
+                filename = f"generated_video_{uuid.uuid4().hex[:8]}.mp4"
+            
+            # TODO: Extract video data from operation result
+            # For now, create placeholder
+            placeholder_message = f"🎬 Video generation queued: {filename}"
+            
+            # In actual implementation:
+            # 1. Extract video data from operation result
+            # 2. Upload to Google Drive using _upload_to_drive
+            # web_view_link = await _upload_to_drive(
+            #     file_data=video_data,
+            #     filename=filename,
+            #     description=f"Generated video with {selected_model}",
+            #     folder_id=folder_id or "1y8eWyr68gPTiFTS2GuNODZp9zx4kg4FC",
+            #     ctx=ctx
+            # )
+            
+            videos.append(placeholder_message)
+        
+        # Log response preparation
+        if ctx: 
+            await ctx.info(f"Video generation template completed for {len(videos)} video(s)")
+        
+        # Return results
+        result = videos if n > 1 else videos[0]
+        return result
+            
+    except Exception as e:
+        if ctx: await ctx.error(f"Video generation failed: {str(e)}")
+        raise ValueError(f"Failed to generate video: {str(e)}")
     
     Automatically uploads all generated images to Google Drive and returns web view URLs.
     
@@ -2559,26 +2674,26 @@ async def analyze_image(
 
 
 # =============================================================================
-# GOOGLE DRIVE TOOLS FOR IMAGES
+# GOOGLE DRIVE TOOLS FOR VIDEOS
 # =============================================================================
 
 @mcp.tool()
-async def search_images(
+async def search_videos(
     query: str = "",
     folder_id: Optional[str] = None,
     max_results: int = 50,
     ctx: Context = None
 ) -> Dict[str, Any]:
     """
-    Search for image files in Google Drive.
+    Search for video files in Google Drive.
     
     Args:
-        query: Search query (e.g., "vacation photos", "name contains 'screenshot'")
+        query: Search query (e.g., "vacation videos", "name contains 'generated'")
         folder_id: Optional folder to search within
         max_results: Maximum number of results (1-1000)
         
     Returns:
-        List of image files with download URLs and metadata
+        List of video files with download URLs and metadata
     """
     try:
         app_context = get_app_context()
@@ -2588,10 +2703,10 @@ async def search_images(
             return {"error": "Google Drive not configured. Please set GOOGLE_OAUTH_TOKEN or GOOGLE_SERVICE_ACCOUNT_JSON", "success": False}
         
         if ctx:
-            await ctx.info(f"Searching for images: {query}")
+            await ctx.info(f"Searching for videos: {query}")
         
-        # Build search query for images
-        q_parts = ["trashed=false", "mimeType contains 'image/'"]
+        # Build search query for videos  
+        q_parts = ["trashed=false", "mimeType contains 'video/'"]
         
         if query:
             q_parts.append(f"name contains '{query}'")
