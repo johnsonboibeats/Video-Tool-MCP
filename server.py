@@ -1668,9 +1668,12 @@ async def create_image(
             await ctx.info("Vertex Imagen 4.0 Ultra supports only n=1; overriding to 1")
         try:
             model_id = selected_model.split(":", 1)[1] if selected_model.startswith("vertex:") else selected_model
-            logger.info(f"🚀 VERTEX MODEL CONFIRMED: Using {model_id}")
-            if ctx: await ctx.info(f"Generating image with Vertex model: {model_id}")
             imagen_model = ImageGenerationModel.from_pretrained(model_id)
+            
+            # Get actual model info from the instantiated model
+            actual_model_name = getattr(imagen_model, 'model_name', model_id) or model_id
+            logger.info(f"🚀 VERTEX MODEL CONFIRMED: API call using {actual_model_name}")
+            if ctx: await ctx.info(f"Generating image with Vertex model: {actual_model_name}")
             # Optional: map size to aspect ratio if provided
             gen_kwargs = {"prompt": prompt, "number_of_images": 1}
             try:
@@ -1765,11 +1768,11 @@ async def create_image(
             web_view_link = await _upload_to_drive(
                 file_data=file_data,
                 filename=filename,
-                description=f"Generated with Vertex {model_id}",
+                description=f"Generated with Vertex {actual_model_name}",
                 folder_id=folder_id or "1y8eWyr68gPTiFTS2GuNODZp9zx4kg4FC",
                 ctx=ctx
             )
-            return f"🎨 Image generated with {model_id}: {web_view_link}"
+            return f"🎨 Image generated with {actual_model_name}: {web_view_link}"
         except Exception as e:
             if ctx: await ctx.error(f"Vertex image generation failed: {str(e)}")
             raise ValueError(f"Failed to generate image with Vertex AI: {str(e)}")
@@ -1821,7 +1824,11 @@ async def create_image(
         # Generate images
         if ctx: await ctx.info(f"Generating {n} image(s) with prompt: {prompt[:100]}...")
         response = await client.images.generate(**params)
-        if ctx: await ctx.info(f"OpenAI API call completed successfully, processing {len(response.data)} images")
+        
+        # Log actual model used from response
+        actual_model_used = getattr(response, 'model', params['model'])
+        logger.info(f"🚀 OPENAI MODEL CONFIRMED: API call completed using {actual_model_used}")
+        if ctx: await ctx.info(f"OpenAI API call completed successfully with {actual_model_used}, processing {len(response.data)} images")
         
         # Process results
         images = []
@@ -1845,7 +1852,7 @@ async def create_image(
             web_view_link = await _upload_to_drive(
                 file_data=file_data,
                 filename=filename,
-                description="Generated image via Image-Tool-MCP Server",
+                description=f"Generated image with {actual_model_used}",
                 folder_id=folder_id or "1y8eWyr68gPTiFTS2GuNODZp9zx4kg4FC",
                 ctx=ctx
             )
@@ -1858,8 +1865,11 @@ async def create_image(
         if ctx: 
             await ctx.info(f"Returning {len(images)} Google Drive URL(s)")
         
-        # Return results
-        return images if n > 1 else images[0]
+        # Return results with actual model used
+        result = images if n > 1 else images[0]
+        if isinstance(result, str):
+            result = f"🎨 Image generated with {actual_model_used}: {result}"
+        return result
             
     except Exception as e:
         if ctx: await ctx.error(f"Image generation failed: {str(e)}")
@@ -2389,6 +2399,10 @@ async def analyze_image(
                 logger.info(f"🚀 VERTEX GEMINI CONFIRMED: Using {model_id} for image analysis")
                 if ctx: await ctx.info(f"Analyzing image with Vertex Gemini model: {model_id}")
                 gen = GenerativeModel(model_id)
+                # Get actual model name after instantiation
+                actual_vertex_model = getattr(gen, 'model_name', model_id) or model_id
+                logger.info(f"🚀 VERTEX GEMINI CONFIRMED: API call using {actual_vertex_model}")
+                
                 parts = [Part.from_text(prompt), Part.from_data(mime_type=image_url.split(';')[0].split(':',1)[1], data=base64.b64decode(image_url.split(',')[1]))]
                 resp = gen.generate_content(parts)
                 # Handle streaming vs non-streaming
@@ -2402,8 +2416,8 @@ async def analyze_image(
                         text = None
                 if not text:
                     text = str(resp)
-                if ctx: await ctx.info("Image analysis completed successfully (Vertex)")
-                return f"🔍 Analysis with {model_id}: {text}"
+                if ctx: await ctx.info(f"Image analysis completed successfully with {actual_vertex_model}")
+                return f"🔍 Analysis with {actual_vertex_model}: {text}"
             except Exception as ve:
                 if ctx: await ctx.info(f"Vertex analysis failed, falling back to OpenAI: {ve}")
                 # Fallback to OpenAI below
@@ -2432,9 +2446,14 @@ async def analyze_image(
             ],
             max_tokens=max_tokens
         )
+        
+        # Get actual model from response
+        actual_response_model = getattr(response, 'model', actual_model)
+        logger.info(f"🚀 OPENAI VISION CONFIRMED: API response from {actual_response_model}")
+        
         analysis = response.choices[0].message.content
-        if ctx: await ctx.info("Image analysis completed successfully (OpenAI)")
-        return f"🔍 Analysis with {actual_model}: {analysis}"
+        if ctx: await ctx.info(f"Image analysis completed successfully with {actual_response_model}")
+        return f"🔍 Analysis with {actual_response_model}: {analysis}"
         
     except Exception as e:
         error_msg = f"Failed to analyze image: {str(e)}"
