@@ -1652,10 +1652,12 @@ async def create_image(
 
     # Determine model selection (scoped to create_image only)
     env_model = os.getenv("CREATE_IMAGE_MODEL")
-    selected_model = model if model and model != "auto" else (env_model or "gpt-image-1")
+    selected_model = model if model and model != "auto" else (env_model or "vertex:imagen-4.0-ultra-generate-001")
+    
+    if ctx: await ctx.info(f"Model selection: input='{model}', env='{env_model}', selected='{selected_model}'")
 
     # Vertex (Imagen) path
-    if selected_model.startswith("vertex:") or selected_model == "imagen-4.0-ultra-generate-preview-06-06":
+    if selected_model.startswith("vertex:") or selected_model.startswith("imagen-"):
         if not VERTEX_AVAILABLE or not app_context.vertex_initialized:
             raise ValueError("Vertex AI not available or not initialized; set GOOGLE_CLOUD_PROJECT and VERTEX_LOCATION and deploy with google-cloud-aiplatform installed")
         # Imagen 4.0 Ultra currently returns 1 image per request; enforce n=1
