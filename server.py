@@ -1654,7 +1654,10 @@ async def create_image(
     env_model = os.getenv("CREATE_IMAGE_MODEL")
     selected_model = model if model and model != "auto" else (env_model or "vertex:imagen-4.0-ultra-generate-001")
     
-    if ctx: await ctx.info(f"Model selection: input='{model}', env='{env_model}', selected='{selected_model}'")
+    # Always log model selection for debugging
+    logger.info(f"🎨 IMAGE MODEL DEBUG: input='{model}', env='{env_model}', selected='{selected_model}'")
+    if ctx: 
+        await ctx.info(f"Model selection: input='{model}', env='{env_model}', selected='{selected_model}'")
 
     # Vertex (Imagen) path
     if selected_model.startswith("vertex:") or selected_model.startswith("imagen-"):
@@ -1665,6 +1668,7 @@ async def create_image(
             await ctx.info("Vertex Imagen 4.0 Ultra supports only n=1; overriding to 1")
         try:
             model_id = selected_model.split(":", 1)[1] if selected_model.startswith("vertex:") else selected_model
+            logger.info(f"🚀 VERTEX MODEL CONFIRMED: Using {model_id}")
             if ctx: await ctx.info(f"Generating image with Vertex model: {model_id}")
             imagen_model = ImageGenerationModel.from_pretrained(model_id)
             # Optional: map size to aspect ratio if provided
@@ -1758,13 +1762,14 @@ async def create_image(
             filename = f"generated_{uuid.uuid4().hex[:8]}.{output_format}"
             
             # Upload to Google Drive
-            return await _upload_to_drive(
+            web_view_link = await _upload_to_drive(
                 file_data=file_data,
                 filename=filename,
-                description="Generated image via Vertex AI",
+                description=f"Generated with Vertex {model_id}",
                 folder_id=folder_id or "1y8eWyr68gPTiFTS2GuNODZp9zx4kg4FC",
                 ctx=ctx
             )
+            return f"🎨 Image generated with {model_id}: {web_view_link}"
         except Exception as e:
             if ctx: await ctx.error(f"Vertex image generation failed: {str(e)}")
             raise ValueError(f"Failed to generate image with Vertex AI: {str(e)}")
