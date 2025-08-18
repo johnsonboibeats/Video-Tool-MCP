@@ -2351,6 +2351,11 @@ async def analyze_image(
     env_model = os.getenv("ANALYZE_IMAGE_MODEL")
     selected_model = model if model and model != "auto" else (env_model or "gpt-4o")
     
+    # Always log model selection for debugging
+    logger.info(f"🔍 ANALYZE MODEL DEBUG: input='{model}', env='{env_model}', selected='{selected_model}'")
+    if ctx: 
+        await ctx.info(f"Model selection: input='{model}', env='{env_model}', selected='{selected_model}'")
+    
     try:
         if ctx: await ctx.info(f"Analyzing image with model {model}...")
         
@@ -2381,6 +2386,7 @@ async def analyze_image(
         if selected_model.startswith("vertex:") and VERTEX_GEN_AVAILABLE and app_context.vertex_initialized:
             try:
                 model_id = selected_model.split(":", 1)[1]
+                logger.info(f"🚀 VERTEX GEMINI CONFIRMED: Using {model_id} for image analysis")
                 if ctx: await ctx.info(f"Analyzing image with Vertex Gemini model: {model_id}")
                 gen = GenerativeModel(model_id)
                 parts = [Part.from_text(prompt), Part.from_data(mime_type=image_url.split(';')[0].split(':',1)[1], data=base64.b64decode(image_url.split(',')[1]))]
@@ -2397,7 +2403,7 @@ async def analyze_image(
                 if not text:
                     text = str(resp)
                 if ctx: await ctx.info("Image analysis completed successfully (Vertex)")
-                return text
+                return f"🔍 Analysis with {model_id}: {text}"
             except Exception as ve:
                 if ctx: await ctx.info(f"Vertex analysis failed, falling back to OpenAI: {ve}")
                 # Fallback to OpenAI below
@@ -2405,8 +2411,10 @@ async def analyze_image(
         # OpenAI Vision path
         client = app_context.openai_client
         check_openai_client(client)
+        actual_model = selected_model if not selected_model.startswith("vertex:") else "gpt-4o"
+        logger.info(f"🚀 OPENAI VISION CONFIRMED: Using {actual_model} for image analysis")
         response = await client.chat.completions.create(
-            model=selected_model if not selected_model.startswith("vertex:") else "gpt-4o",
+            model=actual_model,
             messages=[
                 {
                     "role": "user",
@@ -2426,7 +2434,7 @@ async def analyze_image(
         )
         analysis = response.choices[0].message.content
         if ctx: await ctx.info("Image analysis completed successfully (OpenAI)")
-        return analysis
+        return f"🔍 Analysis with {actual_model}: {analysis}"
         
     except Exception as e:
         error_msg = f"Failed to analyze image: {str(e)}"
