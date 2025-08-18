@@ -1670,10 +1670,10 @@ async def create_image(
             model_id = selected_model.split(":", 1)[1] if selected_model.startswith("vertex:") else selected_model
             imagen_model = ImageGenerationModel.from_pretrained(model_id)
             
-            # Update model_id with actual model info from the instantiated model
-            model_id = getattr(imagen_model, 'model_name', model_id) or model_id
-            logger.info(f"🚀 VERTEX MODEL CONFIRMED: API call using {model_id}")
-            if ctx: await ctx.info(f"Generating image with Vertex model: {model_id}")
+            # Get actual model info from the instantiated model
+            actual_model_used = getattr(imagen_model, 'model_name', model_id) or model_id
+            logger.info(f"🚀 VERTEX MODEL CONFIRMED: API call using {actual_model_used}")
+            if ctx: await ctx.info(f"Generating image with Vertex model: {actual_model_used}")
             # Optional: map size to aspect ratio if provided
             gen_kwargs = {"prompt": prompt, "number_of_images": 1}
             try:
@@ -1768,11 +1768,11 @@ async def create_image(
             web_view_link = await _upload_to_drive(
                 file_data=file_data,
                 filename=filename,
-                description=f"Generated with Vertex {model_id}",
+                description=f"Generated with Vertex {actual_model_used}",
                 folder_id=folder_id or "1y8eWyr68gPTiFTS2GuNODZp9zx4kg4FC",
                 ctx=ctx
             )
-            return f"🎨 Image generated with {model_id}: {web_view_link}"
+            return f"🎨 Image generated with {actual_model_used}: {web_view_link}"
         except Exception as e:
             if ctx: await ctx.error(f"Vertex image generation failed: {str(e)}")
             raise ValueError(f"Failed to generate image with Vertex AI: {str(e)}")
@@ -1825,10 +1825,10 @@ async def create_image(
         if ctx: await ctx.info(f"Generating {n} image(s) with prompt: {prompt[:100]}...")
         response = await client.images.generate(**params)
         
-        # Update model with actual model used from response
-        model = getattr(response, 'model', params['model'])
-        logger.info(f"🚀 OPENAI MODEL CONFIRMED: API call completed using {model}")
-        if ctx: await ctx.info(f"OpenAI API call completed successfully with {model}, processing {len(response.data)} images")
+        # Get actual model used from response
+        actual_model_used = getattr(response, 'model', params['model'])
+        logger.info(f"🚀 OPENAI MODEL CONFIRMED: API call completed using {actual_model_used}")
+        if ctx: await ctx.info(f"OpenAI API call completed successfully with {actual_model_used}, processing {len(response.data)} images")
         
         # Process results
         images = []
@@ -1852,7 +1852,7 @@ async def create_image(
             web_view_link = await _upload_to_drive(
                 file_data=file_data,
                 filename=filename,
-                description=f"Generated image with {model}",
+                description=f"Generated image with {actual_model_used}",
                 folder_id=folder_id or "1y8eWyr68gPTiFTS2GuNODZp9zx4kg4FC",
                 ctx=ctx
             )
@@ -1868,7 +1868,7 @@ async def create_image(
         # Return results with actual model used
         result = images if n > 1 else images[0]
         if isinstance(result, str):
-            result = f"🎨 Image generated with {model}: {result}"
+            result = f"🎨 Image generated with {actual_model_used}: {result}"
         return result
             
     except Exception as e:
@@ -2399,9 +2399,9 @@ async def analyze_image(
                 logger.info(f"🚀 VERTEX GEMINI CONFIRMED: Using {model_id} for image analysis")
                 if ctx: await ctx.info(f"Analyzing image with Vertex Gemini model: {model_id}")
                 gen = GenerativeModel(model_id)
-                # Update model_id with actual model name after instantiation
-                model_id = getattr(gen, 'model_name', model_id) or model_id
-                logger.info(f"🚀 VERTEX GEMINI CONFIRMED: API call using {model_id}")
+                # Get actual model name after instantiation
+                actual_model_used = getattr(gen, 'model_name', model_id) or model_id
+                logger.info(f"🚀 VERTEX GEMINI CONFIRMED: API call using {actual_model_used}")
                 
                 parts = [Part.from_text(prompt), Part.from_data(mime_type=image_url.split(';')[0].split(':',1)[1], data=base64.b64decode(image_url.split(',')[1]))]
                 resp = gen.generate_content(parts)
@@ -2416,8 +2416,8 @@ async def analyze_image(
                         text = None
                 if not text:
                     text = str(resp)
-                if ctx: await ctx.info(f"Image analysis completed successfully with {model_id}")
-                return f"🔍 Analysis with {model_id}: {text}"
+                if ctx: await ctx.info(f"Image analysis completed successfully with {actual_model_used}")
+                return f"🔍 Analysis with {actual_model_used}: {text}"
             except Exception as ve:
                 if ctx: await ctx.info(f"Vertex analysis failed, falling back to OpenAI: {ve}")
                 # Fallback to OpenAI below
@@ -2447,13 +2447,13 @@ async def analyze_image(
             max_tokens=max_tokens
         )
         
-        # Update actual_model with actual model from response
-        actual_model = getattr(response, 'model', actual_model)
-        logger.info(f"🚀 OPENAI VISION CONFIRMED: API response from {actual_model}")
+        # Get actual model from response
+        actual_model_used = getattr(response, 'model', actual_model)
+        logger.info(f"🚀 OPENAI VISION CONFIRMED: API response from {actual_model_used}")
         
         analysis = response.choices[0].message.content
-        if ctx: await ctx.info(f"Image analysis completed successfully with {actual_model}")
-        return f"🔍 Analysis with {actual_model}: {analysis}"
+        if ctx: await ctx.info(f"Image analysis completed successfully with {actual_model_used}")
+        return f"🔍 Analysis with {actual_model_used}: {analysis}"
         
     except Exception as e:
         error_msg = f"Failed to analyze image: {str(e)}"
