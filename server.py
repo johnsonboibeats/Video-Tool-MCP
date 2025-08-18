@@ -1623,20 +1623,16 @@ async def get_file_path(file_input: str) -> str:
 # =============================================================================
 
 @mcp.tool()
-async def create_image(
+async def create_video(
     prompt: str,
     ctx: Context = None,
-    model: Literal["gpt-image-1", "auto", "vertex:imagen-4.0-ultra-generate-001", "vertex:imagen-3.0-capable-generate-001", "vertex:imagen-3.0-generate-001", "vertex:imagen-3.0-fast-generate-001"] = "auto",
-    size: Literal["1024x1024", "1536x1024", "1024x1536", "auto"] = "auto",
-    quality: Literal["auto", "high", "medium", "low"] = "auto",
-    background: Literal["transparent", "opaque", "auto"] = "auto", 
-    output_format: Literal["png", "jpeg", "webp"] = "png",
-    output_compression: Optional[int] = None,
-    moderation: Literal["auto", "low"] = "auto",
+    model: Literal["veo-3.0-generate-preview", "veo-3.0-fast-generate-preview", "auto"] = "auto",
+    aspect_ratio: Literal["16:9", "9:16", "auto"] = "auto",
+    negative_prompt: Optional[str] = None,
     n: int = 1,
     folder_id: Optional[str] = None
 ) -> Union[str, list[str]]:
-    """Generate images from text prompts using OpenAI (gpt-image-1) or Vertex via Google Gen AI SDK.
+    """Generate videos from text prompts using Google Veo3.
     
     Automatically uploads all generated images to Google Drive and returns web view URLs.
     
