@@ -3,6 +3,18 @@
 Video Tool MCP Server - Google Veo3 Video Generation
 """
 
+# Debug logging for Railway deployment
+import os
+import sys
+print(f"🚀 Starting Video-Tool-MCP Server...")
+print(f"🔧 Python version: {sys.version}")
+print(f"📁 Working directory: {os.getcwd()}")
+print(f"🌍 Environment check:")
+print(f"   GOOGLE_API_KEY: {'✅ Set' if os.getenv('GOOGLE_API_KEY') else '❌ Missing'}")
+print(f"   GOOGLE_CLOUD_PROJECT: {os.getenv('GOOGLE_CLOUD_PROJECT', '❌ Missing')}")
+print(f"   VERTEX_LOCATION: {os.getenv('VERTEX_LOCATION', '❌ Missing')}")
+print(f"   GOOGLE_APPLICATION_CREDENTIALS: {'✅ Set' if os.getenv('GOOGLE_APPLICATION_CREDENTIALS') else '❌ Missing'}")
+print(f"   PORT: {os.getenv('PORT', '8080')}")
 
 # Suppress warnings for cleaner deployment
 import warnings
@@ -74,14 +86,17 @@ except ImportError:
 
 
 
-# Google Gen AI SDK imports (preferred for image generation)
+# Google Gen AI SDK imports (for Veo3 video generation)
 try:
+    print("📦 Importing Google Gen AI SDK...")
     from google import genai as genai_sdk  # alias to avoid name clash
     from google.genai import types as genai_types
     GENAI_AVAILABLE = True
-except Exception:
+    print("✅ Google Gen AI SDK imported successfully")
+except Exception as e:
     GENAI_AVAILABLE = False
-    logger.warning("Google Gen AI SDK not available - image generation via GenAI will be disabled")
+    print(f"❌ Google Gen AI SDK import failed: {e}")
+    print("⚠️ Video generation via Veo3 will be disabled")
 
 # Vertex AI (Gemini) generative models (for analysis) with graceful fallback
 try:
@@ -3008,7 +3023,7 @@ if __name__ == "__main__":
                        help="Transport method (http or stdio)")
     parser.add_argument("--host", default=os.getenv("HOST", "0.0.0.0"),
                        help="Host to bind to (http mode only)")
-    parser.add_argument("--port", type=int, default=int(os.getenv("PORT", 8000)),
+    parser.add_argument("--port", type=int, default=int(os.getenv("PORT", 8080)),
                        help="Port to bind to (http mode only)")
     
     args = parser.parse_args()
@@ -3021,8 +3036,16 @@ if __name__ == "__main__":
         mcp.run(transport="stdio")
     else:
         # HTTP mode - show configuration
+        print("=" * 50)
+        print("🚀 STARTING VIDEO-TOOL-MCP SERVER")
+        print("=" * 50)
+        print(f"🔧 Server configuration:")
+        print(f"  Transport: {args.transport}")
+        print(f"  Host: {args.host}")
+        print(f"  Port: {args.port}")
+        
         logger.info("=" * 50)
-        logger.info("STARTING IMAGE TOOL MCP SERVER")
+        logger.info("STARTING VIDEO-TOOL-MCP SERVER")
         logger.info("=" * 50)
         logger.info(f"Server configuration:")
         logger.info(f"  Transport: {args.transport}")
