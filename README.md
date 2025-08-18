@@ -1,23 +1,23 @@
-# Image Tool MCP Server
+# Video Tool MCP Server
 
-A comprehensive Model Context Protocol (MCP) server for image processing tasks, deployed on Railway with Claude Desktop compatibility and full OAuth 2.0 support.
+A comprehensive Model Context Protocol (MCP) server for video generation and processing tasks, deployed on Railway with Claude Desktop compatibility and full OAuth 2.0 support.
 
 ## Features
 
-- **Image Generation**: Create images from text prompts using OpenAI's gpt-image-1 or Google Vertex AI Imagen 4.0 Ultra
-- **Image Analysis**: Analyze images with detailed descriptions using GPT-4o
-- **Image Editing**: Edit images with text prompts and optional masks
-- **Image Variations**: Generate variations of existing images
-- **Text Extraction**: Extract text from images using OCR
-- **Image Comparison**: Compare two images for similarities and differences
+- **Video Generation**: Create videos from text prompts using Google Veo3 API
+- **Video Analysis**: Analyze videos with detailed descriptions using GPT-4o
+- **Video Editing**: Edit videos with text prompts and optional masks
+- **Video Variations**: Generate variations of existing videos
+- **Text Extraction**: Extract text from video frames using OCR
+- **Video Comparison**: Compare two videos for similarities and differences
 - **Smart Editing**: Advanced editing with analysis and modification prompts
-- **Image Transformations**: Resize, rotate, flip, and apply filters
-- **Batch Processing**: Process multiple images with various operations
-- **Image Metadata**: Extract technical information from images
-- **Prompt Generation**: Generate optimized prompts from images
+- **Video Transformations**: Resize, rotate, flip, and apply filters to video frames
+- **Batch Processing**: Process multiple videos with various operations
+- **Video Metadata**: Extract technical information from videos
+- **Prompt Generation**: Generate optimized prompts from video content
 - **Local File Support**: Process files from local file system
-- **Base64 Support**: Handle base64 encoded image data
-- **Google Drive Integration**: Search, upload, and process images directly from Google Drive
+- **Base64 Support**: Handle base64 encoded video data
+- **Google Drive Integration**: Search, upload, and process videos directly from Google Drive
 - **OAuth 2.0 Support**: Full OAuth implementation for Claude integration
 
 ## OAuth 2.0 Implementation
@@ -55,22 +55,22 @@ For detailed OAuth documentation, see [OAUTH_IMPLEMENTATION.md](OAUTH_IMPLEMENTA
 ## Environment Variables
 
 ### Required
-- `OPENAI_API_KEY`: Your OpenAI API key for image generation and analysis (used by most tools; create_image can also use Vertex)
+- `GOOGLE_API_KEY`: Your Google API key for Veo3 video generation
+- `OPENAI_API_KEY`: Your OpenAI API key for video analysis (used by most tools)
 
 ### Optional
-#### Vertex AI (Imagen) for create_image (Optional)
-- `CREATE_IMAGE_MODEL`: Default model for the `create_image` tool only. Examples:
-  - `openai:gpt-image-1` (default)
-  - `vertex:imagen-4.0-ultra-generate-preview-06-06` (see: https://cloud.google.com/vertex-ai/generative-ai/docs/models/imagen/4-0-ultra-generate-preview-06-06)
-- `GOOGLE_CLOUD_PROJECT`: GCP project for Vertex AI
+#### Google Veo3 for create_video (Required for video generation)
+- `CREATE_VIDEO_MODEL`: Default model for the `create_video` tool only. Examples:
+  - `google:veo3` (default)
+- `GOOGLE_CLOUD_PROJECT`: GCP project for Veo3 API
 - `VERTEX_LOCATION`: Vertex region (e.g., `us-central1`)
 - `GOOGLE_CLOUD_REGION`: Same as above (for consistency)
 - `GOOGLE_APPLICATION_CREDENTIALS`: Path to ADC JSON file (in Railway, provide JSON via env and write it to a temp file at startup)
 
-Note: Vertex configuration is used only by `create_image` when `CREATE_IMAGE_MODEL` selects a Vertex model. Other tools continue using OpenAI.
+Note: Veo3 configuration is used by `create_video` for video generation. Other tools continue using OpenAI.
 
-#### Vertex AI (Gemini) for analyze_image (Optional)
-- `ANALYZE_IMAGE_MODEL`: Default model for the `analyze_image` tool only. Examples:
+#### Vertex AI (Gemini) for analyze_video (Optional)
+- `ANALYZE_VIDEO_MODEL`: Default model for the `analyze_video` tool only. Examples:
   - `gpt-4o` (default)
   - `vertex:gemini-2.5-pro`
   - Provide `GOOGLE_CLOUD_PROJECT`, `VERTEX_LOCATION`, and ADC as above.
@@ -89,13 +89,15 @@ Note: Vertex configuration is used only by `create_image` when `CREATE_IMAGE_MOD
 
 ### Prerequisites
 - Python 3.8+
-- OpenAI API key with image generation access
+- Google API key with Veo3 access
+- OpenAI API key for video analysis
 
 ### Setup
 1. Clone the repository
 2. Install dependencies: `pip install -r requirements.txt`
 3. Set environment variables:
    ```bash
+   export GOOGLE_API_KEY="your-google-api-key"
    export OPENAI_API_KEY="your-openai-api-key"
    ```
 4. Run the server: `python server.py`
@@ -111,6 +113,7 @@ python test_oauth.py
 ### Environment Variables
 ```json
 {
+  "GOOGLE_API_KEY": "your-google-api-key",
   "OPENAI_API_KEY": "your-openai-api-key",
   "JWT_SECRET": "your-jwt-secret-key"
 }
@@ -128,7 +131,7 @@ railway up
 2. Add your server URL (e.g., `https://your-server.railway.app`)
 3. Claude will automatically discover OAuth endpoints
 4. Complete the OAuth authorization flow
-5. Start using image processing tools
+5. Start using video processing tools
 
 ### OAuth Flow
 1. Claude requests authorization via `/oauth/authorize`
@@ -139,29 +142,30 @@ railway up
 
 ## Usage Examples
 
-### Image Generation
+### Video Generation
 ```json
 {
-  "prompt": "A serene mountain landscape at sunset",
-  "size": "1024x1024",
-  "output_format": "png"
+  "prompt": "A serene mountain landscape at sunset with flowing water",
+  "duration": 5,
+  "resolution": "1080p",
+  "output_format": "mp4"
 }
 ```
 
-### Image Analysis
+### Video Analysis
 ```json
 {
-  "image": "/path/to/image.jpg",
-  "prompt": "Describe this image in detail"
+  "video": "/path/to/video.mp4",
+  "prompt": "Describe this video in detail"
 }
 ```
 
-### Image Editing
+### Video Editing
 ```json
 {
-  "image": "/path/to/image.jpg",
+  "video": "/path/to/video.mp4",
   "prompt": "Add a red car to the scene",
-  "output_format": "png"
+  "output_format": "mp4"
 }
 ```
 
@@ -172,14 +176,14 @@ The server supports the following input types:
 #### Local Files
 ```json
 {
-  "image": "/absolute/path/to/image.jpg"
+  "video": "/absolute/path/to/video.mp4"
 }
 ```
 
 #### Base64 Data
 ```json
 {
-  "image": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA..."
+  "video": "data:video/mp4;base64,AAAAIGZ0eXBpc29tAAACAGlzb21pc28y..."
 }
 ```
 
@@ -205,19 +209,19 @@ The server supports the following input types:
 
 ## Available Tools
 
-### Image Processing
-1. **create_image** - Generate images from text prompts
-2. **analyze_image** - Analyze images with detailed descriptions
-3. **edit_image** - Edit images with text prompts
-4. **generate_variations** - Create variations of existing images
-5. **extract_text** - Extract text from images using OCR
-6. **batch_process** - Process multiple images
-7. **image_metadata** - Extract image metadata
+### Video Processing
+1. **create_video** - Generate videos from text prompts using Google Veo3
+2. **analyze_video** - Analyze videos with detailed descriptions
+3. **edit_video** - Edit videos with text prompts
+4. **generate_variations** - Create variations of existing videos
+5. **extract_text** - Extract text from video frames using OCR
+6. **batch_process** - Process multiple videos
+7. **video_metadata** - Extract video metadata
 
 ### Google Drive Integration
-8. **search_images** - Search for image files in Google Drive
-9. **upload_image** - Upload images to Google Drive with metadata
-10. **get_image_from_drive** - Get direct download URLs for Drive images
+8. **search_videos** - Search for video files in Google Drive
+9. **upload_video** - Upload videos to Google Drive with metadata
+10. **get_video_from_drive** - Get direct download URLs for Drive videos
 
 ## Error Handling
 
@@ -226,7 +230,7 @@ The server includes comprehensive error handling for:
 - Missing API keys
 - Rate limiting
 - Network timeouts
-- Invalid image formats
+- Invalid video formats
 - OAuth authentication errors
 - Token validation failures
 

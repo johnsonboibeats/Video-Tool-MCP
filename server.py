@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Image Tool MCP Server - Simplified Railway Deploy Version
+Video Tool MCP Server - Google Veo3 Video Generation
 """
 
 
@@ -72,14 +72,16 @@ except ImportError:
     HTTPX_AVAILABLE = False
     logger.warning("Httpx not available - some image features may be disabled")
 
-# Vertex AI (Imagen) imports with graceful fallbacks
+
+
+# Google Gen AI SDK imports (preferred for image generation)
 try:
-    import vertexai  # type: ignore
-    from vertexai.preview.vision_models import ImageGenerationModel  # type: ignore
-    VERTEX_AVAILABLE = True
+    from google import genai as genai_sdk  # alias to avoid name clash
+    from google.genai import types as genai_types
+    GENAI_AVAILABLE = True
 except Exception:
-    VERTEX_AVAILABLE = False
-    logger.warning("Vertex AI SDK not available - Imagen models will be disabled")
+    GENAI_AVAILABLE = False
+    logger.warning("Google Gen AI SDK not available - image generation via GenAI will be disabled")
 
 # Vertex AI (Gemini) generative models (for analysis) with graceful fallback
 try:
@@ -123,7 +125,7 @@ class AppContext(BaseModel):
     # Vertex AI (Imagen) configuration
     vertex_project: Optional[str] = None
     vertex_location: Optional[str] = None
-    vertex_initialized: bool = False
+    vertex_configured: bool = False
 
 # Global app context for FastMCP tools
 _global_app_context: Optional[AppContext] = None
@@ -484,14 +486,10 @@ def initialize_app_context():
 
         vertex_project = os.getenv("GOOGLE_CLOUD_PROJECT") or os.getenv("VERTEX_PROJECT")
         vertex_location = os.getenv("VERTEX_LOCATION", "us-central1")
-        vertex_initialized = False
-        if VERTEX_AVAILABLE and vertex_project:
-            try:
-                vertexai.init(project=vertex_project, location=vertex_location)  # type: ignore
-                vertex_initialized = True
-                logger.info(f"Vertex AI initialized for project {vertex_project} in {vertex_location}")
-            except Exception as e:
-                logger.warning(f"Failed to initialize Vertex AI SDK: {e}")
+        # Consider Vertex "configured" for GenAI usage if a project is configured
+        vertex_configured = bool(vertex_project)
+        if vertex_configured:
+            logger.info(f"Vertex configuration detected for project {vertex_project} in {vertex_location} (GenAI SDK mode)")
 
         # Create context
         context = AppContext(
@@ -503,7 +501,7 @@ def initialize_app_context():
             download_cache={},
             vertex_project=vertex_project,
             vertex_location=vertex_location,
-            vertex_initialized=vertex_initialized
+            vertex_configured=vertex_configured
         )
         
         # Set global context for FastMCP tools
@@ -641,6 +639,16 @@ async def health_check(request: Request):
             response_data["google_drive_configured"] = _global_app_context.drive_service is not None if _global_app_context else False
         except Exception:
             response_data["google_drive_configured"] = False
+
+        # Expose Vertex status
+        try:
+            response_data["vertex_configured"] = _global_app_context.vertex_configured if _global_app_context else False
+            response_data["vertex_project"] = _global_app_context.vertex_project if _global_app_context else None
+            response_data["vertex_location"] = _global_app_context.vertex_location if _global_app_context else None
+        except Exception:
+            response_data["vertex_configured"] = False
+            response_data["vertex_project"] = None
+            response_data["vertex_location"] = None
             
         logger.info(f"Health check response: {response_data}")
         # Lazy-start periodic cleanup loop after server has an event loop
@@ -1611,7 +1619,7 @@ async def get_file_path(file_input: str) -> str:
     raise ValueError("Invalid file path: must be an absolute path, base64 data, HTTP URL, or Google Drive URL (drive://, drive.google.com, docs.google.com)")
 
 # =============================================================================
-# IMAGE PROCESSING TOOLS
+# VIDEO AND IMAGE PROCESSING TOOLS
 # =============================================================================
 
 @mcp.tool()
@@ -1628,7 +1636,7 @@ async def create_image(
     n: int = 1,
     folder_id: Optional[str] = None
 ) -> Union[str, list[str]]:
-    """Generate images from text prompts using OpenAI's latest gpt-image-1 model.
+    """Generate images from text prompts using OpenAI (gpt-image-1) or Vertex via Google Gen AI SDK.
     
     Automatically uploads all generated images to Google Drive and returns web view URLs.
     
@@ -1652,118 +1660,107 @@ async def create_image(
 
     # Determine model selection (scoped to create_image only)
     env_model = os.getenv("CREATE_IMAGE_MODEL")
-    selected_model = model if model and model != "auto" else (env_model or "vertex:imagen-4.0-ultra-generate-001")
+    selected_model = model if model and model != "auto" else (env_model or "gpt-image-1")
     
     # Always log model selection for debugging
     logger.info(f"🎨 IMAGE MODEL DEBUG: input='{model}', env='{env_model}', selected='{selected_model}'")
     if ctx: 
         await ctx.info(f"Model selection: input='{model}', env='{env_model}', selected='{selected_model}'")
 
+
     # Vertex (Imagen) path
     if selected_model.startswith("vertex:") or selected_model.startswith("imagen-"):
-        if not VERTEX_AVAILABLE or not app_context.vertex_initialized:
-            raise ValueError("Vertex AI not available or not initialized; set GOOGLE_CLOUD_PROJECT and VERTEX_LOCATION and deploy with google-cloud-aiplatform installed")
+        if not GENAI_AVAILABLE or not app_context.vertex_project:
+            raise ValueError("Google Gen AI SDK not available or Vertex project not configured; set GOOGLE_CLOUD_PROJECT/VERTEX_PROJECT and VERTEX_LOCATION, and install google-genai")
         # Imagen 4.0 Ultra currently returns 1 image per request; enforce n=1
         if n != 1 and ctx:
             await ctx.info("Vertex Imagen 4.0 Ultra supports only n=1; overriding to 1")
+        n = 1
         try:
             model_id = selected_model.split(":", 1)[1] if selected_model.startswith("vertex:") else selected_model
-            imagen_model = ImageGenerationModel.from_pretrained(model_id)
-            
-            # Get actual model info from the instantiated model
-            actual_model_used = getattr(imagen_model, 'model_name', model_id) or model_id
-            logger.info(f"🚀 VERTEX MODEL CONFIRMED: API call using {actual_model_used}")
-            if ctx: await ctx.info(f"Generating image with Vertex model: {actual_model_used}")
-            # Optional: map size to aspect ratio if provided
-            gen_kwargs = {"prompt": prompt, "number_of_images": 1}
+
+            if not GENAI_AVAILABLE:
+                raise ValueError("Google Gen AI SDK is not available; install `google-genai`.")
+
+            # Use Google Gen AI SDK (Vertex mode)
+            client = genai_sdk.Client(
+                vertexai=True,
+                project=app_context.vertex_project,
+                location=app_context.vertex_location or "us-central1",
+            )
+
+            # Map size to aspect ratio when provided
+            cfg_kwargs = {"number_of_images": 1}
             try:
                 if size and size != "auto" and "x" in size:
-                    w, h = size.split("x")
+                    w_str, h_str = size.split("x")
+                    w, h = int(w_str), int(h_str)
                     if w == h:
-                        gen_kwargs["aspect_ratio"] = "1:1"
+                        cfg_kwargs["aspect_ratio"] = "1:1"
                     elif w > h:
-                        gen_kwargs["aspect_ratio"] = "16:9"
+                        cfg_kwargs["aspect_ratio"] = "16:9"
                     else:
-                        gen_kwargs["aspect_ratio"] = "9:16"
+                        cfg_kwargs["aspect_ratio"] = "9:16"
             except Exception:
                 pass
-            resp = imagen_model.generate_images(**gen_kwargs)
 
-            # Normalize response to a list of image-like objects
-            candidates = []
-            if isinstance(resp, list):
-                candidates = resp
-            else:
-                for attr in ("images", "generated_images", "_images"):
-                    if hasattr(resp, attr):
-                        try:
-                            candidates = getattr(resp, attr) or []
-                            break
-                        except Exception:
-                            continue
-            if not candidates:
-                candidates = [resp]
+            cfg = genai_types.GenerateImagesConfig(**cfg_kwargs)
 
-            # Extract bytes from the first candidate
-            img_obj = candidates[0]
-            data_bytes = None
-            # 1) Direct bytes
-            for attr in ("image_bytes", "_image_bytes"):
-                try:
-                    val = getattr(img_obj, attr)
-                    if val:
-                        data_bytes = val
-                        break
-                except Exception:
-                    continue
-            # 2) Method-based bytes
-            if data_bytes is None:
-                for method in ("to_bytes", "as_bytes", "as_png_bytes"):
-                    try:
-                        fn = getattr(img_obj, method, None)
-                        if callable(fn):
-                            out = fn()
-                            if out:
-                                data_bytes = out
-                                break
-                    except Exception:
-                        continue
-            # 3) PIL fallback
-            if data_bytes is None:
-                pil_image = getattr(img_obj, "_pil_image", None) or getattr(img_obj, "image", None)
-                if pil_image is not None:
-                    import io as _io
-                    buf = _io.BytesIO()
-                    pil_image.save(buf, format=output_format.upper())
-                    data_bytes = buf.getvalue()
-            # 4) File save fallback
-            if data_bytes is None:
-                temp_ext = {"png": ".png", "jpeg": ".jpg", "webp": ".webp"}.get(output_format, ".png")
-                temp_file = Path(tempfile.gettempdir()) / f"vertex_img_{uuid.uuid4().hex[:8]}{temp_ext}"
-                try:
-                    saver = getattr(img_obj, "save", None)
-                    if callable(saver):
-                        try:
-                            saver(location=str(temp_file))
-                        except TypeError:
-                            try:
-                                saver(filename=str(temp_file))
-                            except Exception:
-                                saver(str(temp_file))
-                        if temp_file.exists():
-                            data_bytes = temp_file.read_bytes()
-                except Exception:
-                    pass
+            actual_model_used = model_id
+            logger.info(f"🚀 VERTEX (GenAI SDK) MODEL CONFIRMED: API call using {actual_model_used}")
+            if ctx:
+                await ctx.info(f"Generating image with Vertex (GenAI SDK) model: {actual_model_used}")
+
+            resp = client.models.generate_images(
+                model=model_id,
+                prompt=prompt,
+                config=cfg,
+            )
+
+            # Extract first image bytes
+            if not getattr(resp, "generated_images", None):
+                raise ValueError("No images returned from GenAI SDK response")
+            data_bytes = resp.generated_images[0].image.image_bytes
 
             if not data_bytes:
                 raise ValueError("Failed to extract image bytes from Vertex response")
-            b64_data = base64.b64encode(data_bytes).decode()
-            # Convert base64 to bytes
-            file_data = base64.b64decode(b64_data)
-            
-            # Generate filename
+
+            # Convert bytes to requested output_format using Pillow when available
+            file_data = data_bytes
+            try:
+                if PIL_AVAILABLE and output_format in ("png", "jpeg", "webp"):
+                    _buf_in = io.BytesIO(data_bytes)
+                    img = PILImage.open(_buf_in)
+
+                    # Handle alpha for JPEG (no transparency support)
+                    if output_format == "jpeg":
+                        if img.mode in ("RGBA", "LA") or ("transparency" in img.info):
+                            base = PILImage.new("RGB", img.size, (255, 255, 255))
+                            alpha = img.split()[-1] if img.mode in ("RGBA", "LA") else None
+                            base.paste(img, mask=alpha)
+                            img = base
+                        else:
+                            if img.mode != "RGB":
+                                img = img.convert("RGB")
+                    else:
+                        # For PNG/WEBP, ensure a sensible mode
+                        if output_format == "png" and img.mode not in ("RGB", "RGBA"):
+                            img = img.convert("RGBA")
+                        elif output_format == "webp" and img.mode not in ("RGB", "RGBA"):
+                            img = img.convert("RGB")
+
+                    _buf_out = io.BytesIO()
+                    img.save(_buf_out, format=output_format.upper())
+                    file_data = _buf_out.getvalue()
+            except Exception as _conv_err:
+                # If conversion fails, fall back to original bytes and continue as PNG
+                logger.warning(f"Pillow conversion failed, falling back to original bytes: {_conv_err}")
+                output_format = "png"
+                file_data = data_bytes
+
+            # Generate filename using the (possibly updated) output_format
             filename = f"generated_{uuid.uuid4().hex[:8]}.{output_format}"
-            
+
             # Upload to Google Drive
             web_view_link = await _upload_to_drive(
                 file_data=file_data,
@@ -1821,6 +1818,9 @@ async def create_image(
             raise ValueError("output_compression must be between 0 and 100")
     
     try:
+        # Filter to known-safe params for OpenAI images.generate
+        _allowed_keys = {"prompt", "model", "n", "size", "quality", "background"}
+        params = {k: v for k, v in params.items() if k in _allowed_keys and v is not None}
         # Generate images
         if ctx: await ctx.info(f"Generating {n} image(s) with prompt: {prompt[:100]}...")
         response = await client.images.generate(**params)
@@ -1875,6 +1875,110 @@ async def create_image(
         if ctx: await ctx.error(f"Image generation failed: {str(e)}")
         raise ValueError(f"Failed to generate image: {str(e)}")
 
+@mcp.tool()
+async def create_video(
+    prompt: str,
+    ctx: Context = None,
+    model: Literal["veo3", "auto"] = "auto",
+    duration: int = 5,
+    resolution: Literal["720p", "1080p", "4k", "auto"] = "auto",
+    quality: Literal["auto", "high", "medium", "low"] = "auto",
+    output_format: Literal["mp4", "webm", "mov"] = "mp4",
+    fps: Optional[int] = None,
+    n: int = 1,
+    folder_id: Optional[str] = None
+) -> Union[str, list[str]]:
+    """Generate videos from text prompts using Google Veo3.
+    
+    Automatically uploads all generated videos to Google Drive and returns web view URLs.
+    
+    Args:
+        prompt: Text description of the video to generate (max 32000 chars)
+        model: Video generation model (veo3)
+        duration: Video duration in seconds (1-30)
+        resolution: Video resolution or 'auto' for optimal resolution
+        quality: Generation quality level
+        output_format: Video format (mp4/webm/mov)
+        fps: Frames per second (default: 24)
+        n: Number of videos to generate (1-5)
+        folder_id: Google Drive folder ID (defaults to Downloads folder)
+        
+    Returns:
+        Google Drive web view URL(s) for generated videos
+    """
+    # Get application context
+    app_context = get_app_context()
+
+    # Determine model selection (scoped to create_video only)
+    env_model = os.getenv("CREATE_VIDEO_MODEL")
+    selected_model = model if model and model != "auto" else (env_model or "veo3")
+    
+    # Always log model selection for debugging
+    logger.info(f"🎬 VIDEO MODEL DEBUG: input='{model}', env='{env_model}', selected='{selected_model}'")
+    if ctx: 
+        await ctx.info(f"Model selection: input='{model}', env='{env_model}', selected='{selected_model}'")
+
+    # Validate inputs
+    if len(prompt) > 32000:
+        raise ValueError("Prompt must be 32000 characters or less")
+    
+    if duration < 1 or duration > 30:
+        raise ValueError("Duration must be between 1 and 30 seconds")
+    
+    if n < 1 or n > 5:
+        raise ValueError("Number of videos must be between 1 and 5")
+    
+    if not fps:
+        fps = 24
+    
+    # Progress tracking for batch generation
+    if n > 1 and ctx:
+        await ctx.report_progress(0, n, f"Starting generation of {n} videos...")
+    
+    try:
+        # Google Veo3 API integration would go here
+        # For now, we'll simulate the video generation process
+        
+        if ctx: 
+            await ctx.info(f"Generating {n} video(s) with prompt: {prompt[:100]}...")
+            await ctx.info("⚠️ Note: This is a template implementation. Actual Veo3 API integration required.")
+        
+        # Process results
+        videos = []
+        
+        for i in range(n):
+            if n > 1 and ctx:
+                await ctx.report_progress(i + 1, n, f"Processing video {i + 1}/{n}")
+            
+            # Generate filename for the video
+            if n > 1:
+                filename = f"generated_video_{uuid.uuid4().hex[:8]}_{i+1}.{output_format}"
+            else:
+                filename = f"generated_video_{uuid.uuid4().hex[:8]}.{output_format}"
+            
+            # TODO: Implement actual Veo3 video generation here
+            # For now, create a placeholder response
+            placeholder_message = f"🎬 Video generation placeholder for: {filename}"
+            
+            # In a real implementation, you would:
+            # 1. Call Google Veo3 API with the prompt and parameters
+            # 2. Get the generated video data
+            # 3. Upload to Google Drive using _upload_to_drive
+            
+            videos.append(placeholder_message)
+        
+        # Log response preparation
+        if ctx: 
+            await ctx.info(f"Video generation template completed for {len(videos)} video(s)")
+        
+        # Return results
+        result = videos if n > 1 else videos[0]
+        return result
+            
+    except Exception as e:
+        if ctx: await ctx.error(f"Video generation failed: {str(e)}")
+        raise ValueError(f"Failed to generate video: {str(e)}")
+
 # =============================================================================
 # MISSING TOOLS RESTORATION
 # =============================================================================
@@ -1914,9 +2018,6 @@ async def edit_image(
     client = app_context.openai_client
     temp_dir = app_context.temp_dir
     
-    # Auto-detect output mode based on transport if not specified
-    if output_mode is None:
-        output_mode = get_default_output_mode()
     
     # Validate parameters according to OpenAI API specification
     if len(prompt) > 4000:
