@@ -1463,7 +1463,7 @@ async def get_file_path(file_input: str) -> str:
 async def create_video(
     prompt: str,
     ctx: Context = None,
-    model: Literal["veo-3.0-generate-preview", "veo-3.0-fast-generate-preview", "veo-3.0-fast-generate-001", "auto"] = "auto",
+    model: Literal["veo-2.0-generate-001", "veo-3.0-generate-preview", "veo-3.0-fast-generate-preview", "auto"] = "auto",
     aspect_ratio: Literal["16:9", "9:16", "auto"] = "auto",
     negative_prompt: Optional[str] = None,
     n: int = 1,
@@ -1479,10 +1479,10 @@ async def create_video(
     
     Args:
         prompt: Text description of the video to generate (max 32000 chars)
-        model: Video generation model (veo-3.0-generate-preview, veo-3.0-fast-generate-preview, veo-3.0-fast-generate-001)
+        model: Video generation model (veo-2.0-generate-001, veo-3.0-generate-preview, veo-3.0-fast-generate-preview)
         aspect_ratio: Video aspect ratio (16:9 or 9:16)
         negative_prompt: Elements to exclude from generation
-        n: Number of videos to generate (1-2, limited by Veo3)
+        n: Number of videos to generate (1-4 for Veo2, 1-2 for Veo3)
         folder_id: Google Drive folder ID (defaults to Downloads folder)
         resolution: Video resolution (720p or 1080p)
         generate_audio: Whether to generate native audio (music, sound effects, dialogue)
@@ -1504,12 +1504,17 @@ async def create_video(
     if ctx: 
         await ctx.info(f"Model selection: input='{model}', env='{env_model}', selected='{selected_model}'")
 
-    # Validate inputs according to Veo3 limits
+    # Validate inputs according to model limits
     if len(prompt) > 32000:
         raise ValueError("Prompt must be 32000 characters or less")
     
-    if n < 1 or n > 2:  # Veo3 limit: maximum 2 videos per request
-        raise ValueError("Number of videos must be between 1 and 2 (Veo3 API limit)")
+    # Different video limits per model
+    if selected_model == "veo-2.0-generate-001":
+        if n < 1 or n > 4:
+            raise ValueError("Number of videos must be between 1 and 4 (Veo2 API limit)")
+    else:  # Veo3 models
+        if n < 1 or n > 2:
+            raise ValueError("Number of videos must be between 1 and 2 (Veo3 API limit)")
     
     # Progress tracking for batch generation
     if n > 1 and ctx:
@@ -1601,7 +1606,7 @@ async def create_video_from_image(
     image: str,
     prompt: str,
     ctx: Context = None,
-    model: Literal["veo-3.0-generate-preview", "veo-3.0-fast-generate-preview", "veo-3.0-fast-generate-001"] = "veo-3.0-generate-preview",
+    model: Literal["veo-2.0-generate-001", "veo-3.0-generate-preview", "veo-3.0-fast-generate-preview"] = "veo-3.0-generate-preview",
     aspect_ratio: Literal["16:9", "9:16"] = "16:9",
     negative_prompt: Optional[str] = None,
     folder_id: Optional[str] = None,
@@ -1783,7 +1788,7 @@ async def batch_video_generation(
     base_prompt: str,
     variations: List[str],
     ctx: Context = None,
-    model: Literal["veo-3.0-generate-preview", "veo-3.0-fast-generate-preview", "veo-3.0-fast-generate-001"] = "veo-3.0-fast-generate-preview",
+    model: Literal["veo-2.0-generate-001", "veo-3.0-generate-preview", "veo-3.0-fast-generate-preview"] = "veo-3.0-fast-generate-preview",
     folder_id: Optional[str] = None,
     aspect_ratio: Literal["16:9", "9:16"] = "16:9",
     resolution: Literal["720p", "1080p"] = "720p"
