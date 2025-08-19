@@ -9,7 +9,7 @@ PyJWT>=2.10.1
 
 # AI SDKs
 openai==1.98.0
-google-genai==0.2.0
+google-genai>=1.30.0
 google-cloud-aiplatform>=1.75.0
 
 # Video processing

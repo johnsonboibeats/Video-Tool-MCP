@@ -1554,38 +1554,72 @@ async def create_video(
         if ctx:
             await ctx.info("Video generation in progress... This may take 1-6 minutes.")
         
-        # TODO: Implement proper async waiting for operation completion
-        # This is a placeholder - actual implementation needs operation polling
+        # Poll operation status until completion
+        import asyncio
+        import time
         
-        # Process results
+        while not operation.done:
+            if ctx:
+                await ctx.info("Polling operation status...")
+            await asyncio.sleep(20)  # Check every 20 seconds
+            operation = client.operations.get(operation)
+        
+        if ctx:
+            await ctx.info("Video generation completed! Processing results...")
+        
+        # Extract generated videos from operation result
+        if not hasattr(operation, 'response') or not hasattr(operation.response, 'generated_videos'):
+            raise ValueError("No videos found in operation response")
+        
+        generated_videos = operation.response.generated_videos
+        if len(generated_videos) != n:
+            logger.warning(f"Expected {n} videos, got {len(generated_videos)}")
+        
+        # Process and upload each video
         videos = []
         
-        for i in range(n):
+        for i, generated_video in enumerate(generated_videos):
             if n > 1 and ctx:
-                await ctx.report_progress(i + 1, n, f"Processing video {i + 1}/{n}")
+                await ctx.report_progress(i + 1, len(generated_videos), f"Processing video {i + 1}/{len(generated_videos)}")
             
             # Generate filename for the video
-            if n > 1:
+            if len(generated_videos) > 1:
                 filename = f"generated_video_{uuid.uuid4().hex[:8]}_{i+1}.mp4"
             else:
                 filename = f"generated_video_{uuid.uuid4().hex[:8]}.mp4"
             
-            # TODO: Extract video data from operation result
-            # For now, create placeholder
-            placeholder_message = f"🎬 Video generation queued: {filename}"
-            
-            # In actual implementation:
-            # 1. Extract video data from operation result
-            # 2. Upload to Google Drive using _upload_to_drive
-            # web_view_link = await _upload_to_drive(
-            #     file_data=video_data,
-            #     filename=filename,
-            #     description=f"Generated video with {selected_model}",
-            #     folder_id=folder_id or "1y8eWyr68gPTiFTS2GuNODZp9zx4kg4FC",
-            #     ctx=ctx
-            # )
-            
-            videos.append(placeholder_message)
+            try:
+                # Download video data from the API
+                if ctx:
+                    await ctx.info(f"Downloading video data for {filename}")
+                
+                # Download the video file data
+                client.files.download(file=generated_video.video)
+                video_data = generated_video.video.read()
+                
+                if ctx:
+                    await ctx.info(f"Video downloaded, size: {len(video_data)} bytes")
+                
+                # Upload to Google Drive
+                web_view_link = await _upload_to_drive(
+                    file_data=video_data,
+                    filename=filename,
+                    description=f"Generated video with {selected_model}: {prompt[:100]}...",
+                    folder_id=folder_id or "1y8eWyr68gPTiFTS2GuNODZp9zx4kg4FC",
+                    ctx=ctx
+                )
+                
+                videos.append(web_view_link)
+                
+                if ctx:
+                    await ctx.info(f"Video {i+1} successfully uploaded to Google Drive")
+                    
+            except Exception as e:
+                error_msg = f"Failed to process video {i+1}: {str(e)}"
+                logger.error(error_msg)
+                if ctx:
+                    await ctx.error(error_msg)
+                videos.append(f"ERROR: {error_msg}")
         
         # Log response preparation
         if ctx: 
