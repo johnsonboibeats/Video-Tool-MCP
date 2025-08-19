@@ -69,22 +69,12 @@ except Exception as e:
     raise
 
 
-# Image processing imports with graceful fallbacks
-try:
-    from PIL import Image as PILImage, ImageOps, ImageFilter, ImageEnhance, ExifTags
-    PIL_AVAILABLE = True
-except ImportError:
-    PIL_AVAILABLE = False
-    logger.warning("Pillow not available - image processing will be disabled")
-
 try:
     import httpx
     HTTPX_AVAILABLE = True
 except ImportError:
     HTTPX_AVAILABLE = False
-    logger.warning("Httpx not available - some image features may be disabled")
-
-
+    logger.warning("Httpx not available - some features may be disabled")
 
 # Google Gen AI SDK imports (for Veo3 video generation)
 try:
@@ -137,7 +127,7 @@ class AppContext(BaseModel):
     http_client: Optional[httpx.AsyncClient] = None
     download_semaphore: Optional[asyncio.Semaphore] = None
     download_cache: Dict[str, Dict[str, Any]] = {}
-    # Vertex AI (Imagen) configuration
+    # Vertex AI configuration
     vertex_project: Optional[str] = None
     vertex_location: Optional[str] = None
     vertex_configured: bool = False
@@ -428,11 +418,11 @@ def initialize_app_context():
             client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
             logger.info("Initialized OpenAI client")
         else:
-            logger.warning("No OpenAI API key found - image tools will not function")
+            logger.warning("No OpenAI API key found - some tools may not function")
             client = None
         
         # Setup temp directory
-        temp_dir = Path(os.getenv("MCP_TEMP_DIR", tempfile.gettempdir())) / "image_tool_mcp"
+        temp_dir = Path(os.getenv("MCP_TEMP_DIR", tempfile.gettempdir())) / "video_tool_mcp"
         temp_dir.mkdir(parents=True, exist_ok=True)
         logger.info(f"Temporary directory: {temp_dir}")
         
@@ -543,11 +533,11 @@ try:
     logger.info("Application context initialized successfully")
 except Exception as e:
     logger.error(f"Failed to initialize application context: {e}")
-    logger.warning("Server will start but image tools may not function properly")
+    logger.warning("Server will start with limited functionality")
     # Create a minimal context to allow server to start
     _global_app_context = AppContext(
         openai_client=None,
-        temp_dir=Path(tempfile.gettempdir()) / "image_tool_mcp",
+        temp_dir=Path(tempfile.gettempdir()) / "video_tool_mcp",
         http_client=None
     )
 
@@ -567,7 +557,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from collections import defaultdict
 
 # Initialize FastMCP server
-mcp = FastMCP("Image Tool MCP")
+mcp = FastMCP("Video Tool MCP")
 
 # =============================================================================
 # SECURITY MIDDLEWARE
@@ -632,7 +622,7 @@ async def health_check(request: Request):
         response_data = {
             "status": "healthy",
             "timestamp": time.time(),
-            "server": "Image Tool MCP Server",
+            "server": "Video Tool MCP Server",
             "oauth_enabled": True,
             "oauth_issuer": get_oauth_config(base_url)["issuer"],
             "oauth_endpoints": {
@@ -697,33 +687,11 @@ async def root_endpoint(request: Request):
     """Root endpoint for basic connectivity test"""
     logger.info("Root endpoint called")
     return JSONResponse({
-        "message": "Image Tool MCP Server is running",
+        "message": "Video Tool MCP Server is running",
         "health_check": "/health",
         "mcp_endpoint": "/mcp/"
     })
 
-@mcp.custom_route("/download/{filename}", methods=["GET"])
-async def download_image(request: Request):
-    """Serve generated images for download"""
-    filename = request.path_params["filename"]
-    logger.info(f"Download request for: {filename}")
-    
-    # Get application context for temp directory
-    app_context = get_app_context()
-    download_path = app_context.temp_dir / "downloads" / filename
-    
-    if download_path.exists() and download_path.is_file():
-        logger.info(f"Serving file: {download_path}")
-        # Add simple caching headers
-        etag = hashlib.sha256(str(download_path.stat().st_mtime_ns).encode()).hexdigest()
-        headers = {
-            "Cache-Control": "public, max-age=86400",
-            "ETag": etag
-        }
-        return FileResponse(download_path, headers=headers)
-    else:
-        logger.warning(f"File not found: {download_path}")
-        return JSONResponse({"error": "File not found"}, status_code=404)
 
 @mcp.custom_route("/mcp", methods=["GET", "HEAD", "POST"])
 async def mcp_redirect(request: Request):
@@ -768,7 +736,7 @@ def get_oauth_config(base_url: str) -> Dict[str, Any]:
         "response_types_supported": ["code"],
         "subject_types_supported": ["public"],
         "id_token_signing_alg_values_supported": ["HS256"],
-        "scopes_supported": ["read", "write", "image_processing"],
+        "scopes_supported": ["read", "write", "video_processing"],
         "token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post"],
         "grant_types_supported": ["authorization_code", "refresh_token"]
     }
@@ -786,7 +754,7 @@ def generate_access_token(user_id: str, scopes: list = None, audience: str = Non
     """Generate JWT access token with audience validation"""
     payload = {
         "sub": user_id,
-        "iss": issuer or "https://image-tool-mcp",
+        "iss": issuer or "https://video-tool-mcp",
         "aud": audience or "claude",  # RFC 8707: Include specific audience
         "exp": datetime.utcnow() + timedelta(hours=JWT_EXPIRY_HOURS),
         "iat": datetime.utcnow(),
@@ -798,7 +766,7 @@ def generate_refresh_token(user_id: str, issuer: Optional[str] = None) -> str:
     """Generate refresh token"""
     payload = {
         "sub": user_id,
-        "iss": issuer or "https://image-tool-mcp",
+        "iss": issuer or "https://video-tool-mcp",
         "aud": "claude",
         "exp": datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRY_DAYS),
         "iat": datetime.utcnow(),
@@ -1144,7 +1112,7 @@ async def oauth_protected_resource(request: Request):
     base_url = get_base_url(request)
     return JSONResponse({
         "resource": "mcp",
-        "scopes": ["read", "write", "image_processing"],
+        "scopes": ["read", "write", "video_processing"],
         "token_endpoint": f"{base_url}oauth/token",
         "userinfo_endpoint": f"{base_url}oauth/userinfo"
     })
@@ -1311,7 +1279,7 @@ async def jwks_endpoint(request: Request):
             {
                 "kty": "oct",
                 "use": "sig",
-                "kid": "image-tool-mcp-key",
+                "kid": "video-tool-mcp-key",
                 "alg": "HS256"
             }
         ]
@@ -1426,130 +1394,6 @@ def cleanup_downloads_dir(temp_dir: Path, max_age_hours: int = 24, max_total_siz
             except Exception:
                 continue
 
-async def save_base64_image(base64_data: str, file_path: Path, format: str = "PNG") -> None:
-    """Save base64 image data to file"""
-    image_data = base64.b64decode(base64_data)
-    async with aiofiles.open(file_path, "wb") as f:
-        await f.write(image_data)
-
-async def validate_image_file(file_path: Union[str, Path]) -> bool:
-    """Validate that the file is a valid image"""
-    if not PIL_AVAILABLE:
-        return True  # Skip validation if PIL not available
-    
-    try:
-        with PILImage.open(file_path) as img:
-            img.verify()  # Verify it's a valid image
-        return True
-    except Exception as e:
-        logger.warning(f"Invalid image file {file_path}: {e}")
-        return False
-
-async def load_image_from_drive(file_id: str) -> tuple[str, str]:
-    """Load image directly from Google Drive without downloading to temp file"""
-    app_context = get_app_context()
-    
-    if not app_context.drive_service:
-        raise ValueError("Google Drive service not available")
-    
-    try:
-        # Get file metadata to determine MIME type
-        file_metadata = app_context.drive_service.files().get(
-            fileId=file_id,
-            fields="mimeType, name"
-        ).execute()
-        
-        mime_type = file_metadata['mimeType']
-        if not mime_type.startswith('image/'):
-            raise ValueError(f"File is not an image (MIME type: {mime_type})")
-        
-        # Download file content directly to memory
-        request = app_context.drive_service.files().get_media(fileId=file_id)
-        file_stream = io.BytesIO()
-        downloader = MediaIoBaseDownload(file_stream, request)
-        
-        done = False
-        while done is False:
-            status, done = downloader.next_chunk()
-        
-        # Get the image data
-        file_stream.seek(0)
-        image_data = file_stream.read()
-        
-        # Convert to base64
-        base64_data = base64.b64encode(image_data).decode()
-        return base64_data, mime_type
-        
-    except Exception as e:
-        raise ValueError(f"Failed to load image from Google Drive: {e}")
-
-async def load_image_as_base64(file_input: Union[str, Path]) -> tuple[str, str]:
-    """Load image file and return as base64 with mime type
-    
-    Supports:
-    - Local file paths
-    - Google Drive URLs/IDs (direct API access)
-    - Base64 data URLs
-    """
-    
-    # Handle Google Drive URLs/IDs directly without temp files
-    if isinstance(file_input, str):
-        if file_input.startswith('drive://') or 'drive.google.com' in file_input or 'docs.google.com' in file_input:
-            file_id = extract_file_id_from_url(file_input)
-            if file_id:
-                app_context = get_app_context()
-                if app_context.drive_service:
-                    return await load_image_from_drive(file_id)
-        
-        # Handle base64 data URLs
-        if file_input.startswith('data:'):
-            # Extract base64 data from data URL
-            if ',' in file_input:
-                header, base64_data = file_input.split(',', 1)
-                # Extract MIME type from header
-                if 'image/' in header:
-                    mime_type = header.split('image/')[1].split(';')[0]
-                    mime_type = f"image/{mime_type}"
-                else:
-                    mime_type = "image/png"
-                return base64_data, mime_type
-            else:
-                raise ValueError("Invalid data URL format")
-    
-    # Handle local file paths
-    file_path = Path(file_input)
-    
-    # Validate the image file if PIL is available
-    if PIL_AVAILABLE and not await validate_image_file(file_path):
-        raise ValueError(f"Invalid or corrupted image file: {file_path}")
-    
-    async with aiofiles.open(file_path, "rb") as f:
-        image_data = await f.read()
-    
-    # Determine mime type from extension
-    ext = file_path.suffix.lower()
-    mime_type = {
-        ".png": "image/png",
-        ".jpg": "image/jpeg", 
-        ".jpeg": "image/jpeg",
-        ".webp": "image/webp",
-        ".gif": "image/gif"
-    }.get(ext, "image/png")
-    
-    base64_data = base64.b64encode(image_data).decode()
-    return base64_data, mime_type
-
-def is_base64_image(data: str) -> bool:
-    """Check if string is valid base64 image data"""
-    try:
-        if data.startswith("data:image/"):
-            # Data URL format
-            return True
-        # Try to decode as base64
-        base64.b64decode(data)
-        return True
-    except Exception:
-        return False
 
 async def get_file_path(file_input: str) -> str:
     """Handle file input and return local file path"""
@@ -1572,29 +1416,7 @@ async def get_file_path(file_input: str) -> str:
     if file_input.startswith('drive://') or 'drive.google.com' in file_input or 'docs.google.com' in file_input:
         file_id = extract_file_id_from_url(file_input)
         if file_id:
-            # If we have Google Drive API access, download directly to memory
-            if app_context.drive_service:
-                try:
-                    base64_data, mime_type = await load_image_from_drive(file_id)
-                    
-                    # Save to temp file for compatibility with existing code
-                    # TODO: Future optimization - process directly from base64 data
-                    ext_map = {
-                        "image/png": ".png",
-                        "image/jpeg": ".jpg", 
-                        "image/webp": ".webp",
-                        "image/gif": ".gif"
-                    }
-                    extension = ext_map.get(mime_type, ".png")
-                    temp_path = app_context.temp_dir / f"drive_image_{file_id}{extension}"
-                    
-                    await save_base64_image(base64_data, temp_path)
-                    return str(temp_path)
-                    
-                except Exception as e:
-                    logger.warning(f"Google Drive API access failed: {e}, falling back to HTTP download")
-            
-            # Fallback to HTTP download if API access fails
+            # Fallback to HTTP download
             download_urls = [
                 f"https://drive.usercontent.google.com/download?id={file_id}&export=download",
                 f"https://drive.google.com/uc?export=download&id={file_id}",
@@ -1628,7 +1450,7 @@ async def get_file_path(file_input: str) -> str:
                 raise FileNotFoundError(f"File not found: {file_input}")
         else:
             # In remote mode, we cannot access local file paths.
-            raise ValueError(f"Cannot access local file path '{file_input}' in remote mode. Please provide a public URL or base64-encoded image.")
+            raise ValueError(f"Cannot access local file path '{file_input}' in remote mode. Please provide a public URL or base64-encoded data.")
 
     # If we get here, it's an invalid input
     raise ValueError("Invalid file path: must be an absolute path, base64 data, HTTP URL, or Google Drive URL (drive://, drive.google.com, docs.google.com)")
@@ -1641,11 +1463,15 @@ async def get_file_path(file_input: str) -> str:
 async def create_video(
     prompt: str,
     ctx: Context = None,
-    model: Literal["veo-3.0-generate-preview", "veo-3.0-fast-generate-preview", "auto"] = "auto",
+    model: Literal["veo-3.0-generate-preview", "veo-3.0-fast-generate-preview", "veo-3.0-fast-generate-001", "auto"] = "auto",
     aspect_ratio: Literal["16:9", "9:16", "auto"] = "auto",
     negative_prompt: Optional[str] = None,
     n: int = 1,
-    folder_id: Optional[str] = None
+    folder_id: Optional[str] = None,
+    resolution: Literal["720p", "1080p", "auto"] = "auto",
+    generate_audio: bool = True,
+    person_generation: bool = True,
+    seed: Optional[int] = None
 ) -> Union[str, list[str]]:
     """Generate videos from text prompts using Google Veo3.
     
@@ -1653,11 +1479,15 @@ async def create_video(
     
     Args:
         prompt: Text description of the video to generate (max 32000 chars)
-        model: Video generation model (veo-3.0-generate-preview or veo-3.0-fast-generate-preview)
+        model: Video generation model (veo-3.0-generate-preview, veo-3.0-fast-generate-preview, veo-3.0-fast-generate-001)
         aspect_ratio: Video aspect ratio (16:9 or 9:16)
         negative_prompt: Elements to exclude from generation
         n: Number of videos to generate (1-2, limited by Veo3)
         folder_id: Google Drive folder ID (defaults to Downloads folder)
+        resolution: Video resolution (720p or 1080p)
+        generate_audio: Whether to generate native audio (music, sound effects, dialogue)
+        person_generation: Whether to allow human figure generation
+        seed: Optional seed for reproducible generation
         
     Returns:
         Google Drive web view URL(s) for generated videos
@@ -1766,587 +1596,314 @@ async def create_video(
 
 # Duplicate create_video function removed - using the updated Veo3 version above
 
-# =============================================================================
-# MISSING TOOLS RESTORATION
-# =============================================================================
-
 @mcp.tool()
-async def edit_image(
+async def create_video_from_image(
     image: str,
     prompt: str,
-    mask: Optional[str] = None,
-    model: Literal["gpt-image-1"] = "gpt-image-1",
-    size: Literal["1024x1024", "1536x1024", "1024x1536", "auto"] = "auto",
-    quality: Literal["auto", "high", "medium", "low"] = "auto",
-    output_format: Literal["png", "jpeg", "webp"] = "png",
-    n: int = 1,
+    ctx: Context = None,
+    model: Literal["veo-3.0-generate-preview", "veo-3.0-fast-generate-preview", "veo-3.0-fast-generate-001"] = "veo-3.0-generate-preview",
+    aspect_ratio: Literal["16:9", "9:16"] = "16:9",
+    negative_prompt: Optional[str] = None,
     folder_id: Optional[str] = None,
-    ctx: Context = None
-) -> Union[str, list[str]]:
-    """Edit existing images using masks and text prompts.
+    resolution: Literal["720p", "1080p"] = "720p",
+    generate_audio: bool = True,
+    person_generation: bool = True,
+    seed: Optional[int] = None
+) -> str:
+    """Generate video from an initial image using Google Veo3.
     
-    Automatically uploads all edited images to Google Drive and returns web view URLs.
+    Automatically uploads the generated video to Google Drive and returns web view URL.
     
     Args:
-        image: Original image (file path or base64)
-        prompt: Text description of desired changes (max 4000 chars)
-        mask: Optional mask image for selective editing (same formats as image)
-        model: Image generation model
-        size: Image dimensions
-        quality: Generation quality level
-        output_format: Image format
-        n: Number of images to generate (1-10)
+        image: Initial image (file path, URL, or base64 data)
+        prompt: Text description of how to animate the image (max 32000 chars)
+        model: Video generation model
+        aspect_ratio: Video aspect ratio (16:9 or 9:16)
+        negative_prompt: Elements to exclude from generation
         folder_id: Google Drive folder ID (defaults to Downloads folder)
+        resolution: Video resolution (720p or 1080p)
+        generate_audio: Whether to generate native audio
+        person_generation: Whether to allow human figure generation
+        seed: Optional seed for reproducible generation
         
     Returns:
-        Google Drive web view URL(s) for edited images
+        Google Drive web view URL for generated video
     """
     app_context = get_app_context()
-    client = app_context.openai_client
-    temp_dir = app_context.temp_dir
-    
-    
-    # Validate parameters according to OpenAI API specification
-    if len(prompt) > 4000:
-        raise ValueError("Prompt must be 4000 characters or less")
-    
-    if n < 1 or n > 10:
-        raise ValueError("Number of images must be between 1 and 10")
-    
-    # Prefer Google Drive fast path (no temp files) when possible
-    drive_fast_path_used = False
-    image_bytes = None
-    image_mime = "image/png"
-    if isinstance(image, str) and (
-        image.startswith('drive://') or 'drive.google.com' in image or 'docs.google.com' in image
-    ):
-        file_id = extract_file_id_from_url(image)
-        if file_id:
-            try:
-                app_ctx = get_app_context()
-                if app_ctx.drive_service:
-                    b64, image_mime = await load_image_from_drive(file_id)
-                    image_bytes = base64.b64decode(b64)
-                    drive_fast_path_used = True
-            except Exception:
-                drive_fast_path_used = False
-                image_bytes = None
-
-    if image_bytes is None:
-        # Fallback: resolve to path then load
-        image_path = await get_file_path(image)
-        image_base64, image_mime = await load_image_as_base64(image_path)
-        image_bytes = base64.b64decode(image_base64)
-    
-    # Determine file extension from MIME type
-    image_ext = "png"  # default
-    if "jpeg" in image_mime or "jpg" in image_mime:
-        image_ext = "jpg"
-    elif "webp" in image_mime:
-        image_ext = "webp"
     
     try:
-        if ctx: await ctx.info(f"Editing image with prompt: {prompt[:100]}...")
+        if not GENAI_AVAILABLE or not app_context.vertex_project:
+            raise ValueError("Google Gen AI SDK not available or Vertex AI not configured")
         
-        # Use httpx for multipart/form-data request
-        import httpx
-        import time
-        start_time = time.time()
+        if ctx: await ctx.info(f"Generating video from image with model {model}...")
         
-        # Get API key from client
-        api_key = os.getenv("OPENAI_API_KEY")
-        if not api_key and hasattr(client, 'api_key'):
-            api_key = client.api_key
+        # Validate prompt length
+        if len(prompt) > 32000:
+            raise ValueError("Prompt must be 32000 characters or less")
         
-        headers = {
-            "Authorization": f"Bearer {api_key}"
+        # Handle image input - convert to path if needed
+        image_path = await get_file_path(image)
+        
+        # Configure the generation request
+        generation_config = {
+            "aspect_ratio": aspect_ratio,
+            "resolution": resolution,
+            "generate_audio": generate_audio,
+            "person_generation": person_generation
         }
         
-        # Prepare files for multipart upload
-        files = {"image": (f"image.{image_ext}", image_bytes, f"image/{image_ext}")}
+        if negative_prompt:
+            generation_config["negative_prompt"] = negative_prompt
+        if seed is not None:
+            generation_config["seed"] = seed
+            
+        if ctx: await ctx.info("Starting video generation from image...")
+        
+        # Note: This is a placeholder for the actual Veo3 image-to-video API call
+        # The actual implementation would use the Google Gen AI SDK
+        # For now, we'll raise an informative error
+        raise NotImplementedError(
+            "Image-to-video generation is not yet implemented in the current Veo3 API integration. "
+            "This feature requires additional API endpoints that are being developed."
+        )
+        
+    except Exception as e:
+        if ctx: await ctx.error(f"Image-to-video generation failed: {str(e)}")
+        raise ValueError(f"Failed to generate video from image: {str(e)}")
 
-        # Optional mask handling with Drive fast path
-        if mask:
-            mask_bytes = None
-            mask_mime = "image/png"
-            if isinstance(mask, str) and (
-                mask.startswith('drive://') or 'drive.google.com' in mask or 'docs.google.com' in mask
-            ):
-                mask_id = extract_file_id_from_url(mask)
-                if mask_id:
-                    try:
-                        app_ctx = get_app_context()
-                        if app_ctx.drive_service:
-                            mb64, mask_mime = await load_image_from_drive(mask_id)
-                            mask_bytes = base64.b64decode(mb64)
-                    except Exception:
-                        mask_bytes = None
-            if mask_bytes is None:
-                mask_path = await get_file_path(mask)
-                mask_base64, mask_mime = await load_image_as_base64(mask_path)
-                mask_bytes = base64.b64decode(mask_base64)
+@mcp.tool()
+async def get_video_operation_status(
+    operation_id: str,
+    ctx: Context = None
+) -> Dict[str, Any]:
+    """Check the status of a video generation operation.
+    
+    Args:
+        operation_id: The operation ID returned from video generation
+        
+    Returns:
+        Operation status information including completion state and progress
+    """
+    try:
+        if not GENAI_AVAILABLE:
+            raise ValueError("Google Gen AI SDK not available")
+            
+        if ctx: await ctx.info(f"Checking status for operation: {operation_id}")
+        
+        # Note: This is a placeholder for the actual operation status API call
+        raise NotImplementedError(
+            "Operation status checking is not yet implemented. "
+            "This feature requires additional API integration with Google's operation management system."
+        )
+        
+    except Exception as e:
+        if ctx: await ctx.error(f"Failed to check operation status: {str(e)}")
+        raise ValueError(f"Failed to check operation status: {str(e)}")
 
-            mask_ext = "png"
-            if "jpeg" in mask_mime or "jpg" in mask_mime:
-                mask_ext = "jpg"
-            elif "webp" in mask_mime:
-                mask_ext = "webp"
-            files["mask"] = (f"mask.{mask_ext}", mask_bytes, f"image/{mask_ext}")
+@mcp.tool()
+async def cancel_video_generation(
+    operation_id: str,
+    ctx: Context = None
+) -> Dict[str, Any]:
+    """Cancel an in-progress video generation operation.
+    
+    Args:
+        operation_id: The operation ID to cancel
         
-        # Prepare data
-        data = {
-            "model": model,
-            "prompt": prompt,
-            "n": n,  # Use the parameter from function signature
-            "size": size if size != "auto" else "1024x1024",
-        }
+    Returns:
+        Cancellation result
+    """
+    try:
+        if not GENAI_AVAILABLE:
+            raise ValueError("Google Gen AI SDK not available")
+            
+        if ctx: await ctx.info(f"Canceling operation: {operation_id}")
         
-        # Add quality parameter if using gpt-image-1
-        if model == "gpt-image-1" and quality != "auto":
-            data["quality"] = quality
+        # Note: This is a placeholder for the actual cancellation API call
+        raise NotImplementedError(
+            "Operation cancellation is not yet implemented. "
+            "This feature requires additional API integration with Google's operation management system."
+        )
         
-        # Make the request using httpx
-        async with httpx.AsyncClient(timeout=120.0) as http_client:
-            response = await http_client.post(
-                "https://api.openai.com/v1/images/edits",
-                headers=headers,
-                files=files,
-                data=data
-            )
+    except Exception as e:
+        if ctx: await ctx.error(f"Failed to cancel operation: {str(e)}")
+        raise ValueError(f"Failed to cancel operation: {str(e)}")
+
+@mcp.tool()
+async def optimize_video_prompt(
+    prompt: str,
+    style_hints: Optional[List[str]] = None,
+    camera_angles: Optional[List[str]] = None,
+    ctx: Context = None
+) -> str:
+    """Optimize and enhance a video generation prompt using Veo3's prompt rewriting capabilities.
+    
+    Args:
+        prompt: Original prompt to optimize
+        style_hints: Optional style guidance (e.g., ["cinematic", "documentary", "animation"])
+        camera_angles: Optional camera positioning (e.g., ["close-up", "wide shot", "tracking"])
+        
+    Returns:
+        Optimized prompt with enhanced descriptions
+    """
+    try:
+        if ctx: await ctx.info("Optimizing video prompt...")
+        
+        # Build enhanced prompt with structure recommendations from Veo3 docs
+        optimized_parts = []
+        
+        # Start with original prompt
+        optimized_parts.append(prompt)
+        
+        # Add style guidance if provided
+        if style_hints:
+            style_text = f"Style: {', '.join(style_hints)}"
+            optimized_parts.append(style_text)
             
-            api_time = time.time() - start_time
-            if ctx: await ctx.info(f"OpenAI API call completed in {api_time:.2f}s")
+        # Add camera positioning if provided
+        if camera_angles:
+            camera_text = f"Camera: {', '.join(camera_angles)}"
+            optimized_parts.append(camera_text)
             
-            if response.status_code != 200:
-                error_msg = f"API error {response.status_code}: {response.text}"
-                if ctx: await ctx.error(error_msg)
-                raise ValueError(error_msg)
+        # Add recommended structure elements
+        optimized_parts.append("High quality, detailed, professional lighting")
+        
+        optimized_prompt = ". ".join(optimized_parts)
+        
+        if ctx: await ctx.info(f"Prompt optimized from {len(prompt)} to {len(optimized_prompt)} characters")
+        
+        return optimized_prompt
+        
+    except Exception as e:
+        if ctx: await ctx.error(f"Failed to optimize prompt: {str(e)}")
+        raise ValueError(f"Failed to optimize prompt: {str(e)}")
+
+@mcp.tool()
+async def batch_video_generation(
+    base_prompt: str,
+    variations: List[str],
+    ctx: Context = None,
+    model: Literal["veo-3.0-generate-preview", "veo-3.0-fast-generate-preview", "veo-3.0-fast-generate-001"] = "veo-3.0-fast-generate-preview",
+    folder_id: Optional[str] = None,
+    aspect_ratio: Literal["16:9", "9:16"] = "16:9",
+    resolution: Literal["720p", "1080p"] = "720p"
+) -> List[str]:
+    """Generate multiple videos with prompt variations for testing different concepts.
+    
+    Args:
+        base_prompt: Base prompt that all variations will build upon
+        variations: List of prompt variations or additions
+        model: Video generation model (fast model recommended for batch operations)
+        folder_id: Google Drive folder ID for all generated videos
+        aspect_ratio: Video aspect ratio for all videos
+        resolution: Video resolution for all videos
+        
+    Returns:
+        List of Google Drive web view URLs for all generated videos
+    """
+    try:
+        if not variations:
+            raise ValueError("At least one variation must be provided")
             
-            response_data = response.json()
+        if len(variations) > 5:
+            raise ValueError("Maximum 5 variations allowed to respect API limits")
             
-            # Validate response structure
-            if "data" not in response_data or not response_data["data"]:
-                error_msg = "Invalid response format: missing data array"
-                if ctx: await ctx.error(error_msg)
-                raise ValueError(error_msg)
+        if ctx: await ctx.info(f"Starting batch generation of {len(variations)} video variations...")
+        
+        results = []
+        total_variations = len(variations)
+        
+        for i, variation in enumerate(variations):
+            if ctx:
+                await ctx.report_progress(i, total_variations, f"Generating video {i+1}/{total_variations}")
             
-            if len(response_data["data"]) != n:
-                error_msg = f"Expected {n} images, got {len(response_data['data'])}"
-                if ctx: await ctx.error(error_msg)
-                raise ValueError(error_msg)
+            # Combine base prompt with variation
+            combined_prompt = f"{base_prompt}. {variation}"
             
-            # Handle multiple images if n > 1
-            if n == 1:
-                b64_data = response_data["data"][0]["b64_json"]
-                
-                # Convert base64 to bytes
-                file_data = base64.b64decode(b64_data)
-                
-                # Generate filename
-                filename = f"edited_{uuid.uuid4().hex[:8]}.{output_format}"
-                
-                # Upload to Google Drive
-                result = await _upload_to_drive(
-                    file_data=file_data,
-                    filename=filename,
-                    description="Edited image via Image-Tool-MCP Server",
-                    folder_id=folder_id or "1y8eWyr68gPTiFTS2GuNODZp9zx4kg4FC",
+            # Generate video using existing create_video function
+            try:
+                video_url = await create_video(
+                    prompt=combined_prompt,
+                    model=model,
+                    aspect_ratio=aspect_ratio,
+                    resolution=resolution,
+                    folder_id=folder_id,
                     ctx=ctx
                 )
-            else:
-                # Handle multiple images
-                results = []
-                for i, img_data in enumerate(response_data["data"]):
-                    b64_data = img_data["b64_json"]
-                    
-                    # Convert base64 to bytes
-                    file_data = base64.b64decode(b64_data)
-                    
-                    # Generate filename with index
-                    filename = f"edited_{uuid.uuid4().hex[:8]}_{i+1}.{output_format}"
-                    
-                    # Upload to Google Drive
-                    result = await _upload_to_drive(
-                        file_data=file_data,
-                        filename=filename,
-                        description=f"Edited image {i+1} via Image-Tool-MCP Server",
-                        folder_id=folder_id or "1y8eWyr68gPTiFTS2GuNODZp9zx4kg4FC",
-                        ctx=ctx
-                    )
-                    results.append(result)
+                results.append(video_url)
                 
-                return results
+                if ctx: await ctx.info(f"Successfully generated variation {i+1}: {variation[:50]}...")
+                
+            except Exception as e:
+                error_msg = f"Failed to generate variation {i+1}: {str(e)}"
+                if ctx: await ctx.error(error_msg)
+                results.append(f"ERROR: {error_msg}")
         
-        # For single image case, result is already set above
-        total_time = time.time() - start_time
-        if ctx: await ctx.info(f"Total edit_image processing time: {total_time:.2f}s")
+        if ctx: await ctx.info(f"Batch generation completed. {len([r for r in results if not r.startswith('ERROR')])} successful, {len([r for r in results if r.startswith('ERROR')])} failed")
         
-        return result
-            
-    except Exception as e:
-        if ctx: await ctx.error(f"Edit image failed: {str(e)}")
-        raise ValueError(f"Failed to edit image: {str(e)}")
-
-@mcp.tool()
-async def generate_variations(
-    image: str,
-    n: int = 1,
-    model: Literal["gpt-image-1"] = "gpt-image-1",
-    size: Literal["1024x1024", "1536x1024", "1024x1536", "auto"] = "auto",
-    quality: Literal["auto", "high", "medium", "low"] = "auto",
-    output_format: Literal["png", "jpeg", "webp"] = "png",
-    folder_id: Optional[str] = None,
-    ctx: Context = None
-) -> Union[str, list[str]]:
-    """Generate variations of existing images.
-    
-    Automatically uploads all generated variations to Google Drive and returns web view URLs.
-    
-    Args:
-        image: Original image (file path or base64)
-        n: Number of variations to generate (1-10)
-        model: Image generation model
-        size: Image dimensions
-        quality: Generation quality level
-        output_format: Image format
-        folder_id: Google Drive folder ID (defaults to Downloads folder)
-        
-    Returns:
-        Google Drive web view URL(s) for generated variations
-    """
-    app_context = get_app_context()
-    client = app_context.openai_client
-    temp_dir = app_context.temp_dir
-    
-    if n < 1 or n > 10:
-        raise ValueError("Number of variations must be between 1 and 10")
-    
-    # Fast path for Google Drive inputs (no temp files)
-    drive_fast_path_used = False
-    if isinstance(image, str) and (
-        image.startswith('drive://') or 'drive.google.com' in image or 'docs.google.com' in image
-    ):
-        file_id = extract_file_id_from_url(image)
-        if file_id:
-            try:
-                app_ctx = get_app_context()
-                if app_ctx.drive_service:
-                    b64, _mime = await load_image_from_drive(file_id)
-                    image_bytes = base64.b64decode(b64)
-                    image_file = io.BytesIO(image_bytes)
-                    image_file.name = "image.png"
-                    drive_fast_path_used = True
-                else:
-                    drive_fast_path_used = False
-            except Exception:
-                drive_fast_path_used = False
-    
-    if not drive_fast_path_used:
-        image_path = await get_file_path(image)
-        image_base64, _ = await load_image_as_base64(image_path)
-        image_bytes = base64.b64decode(image_base64)
-        image_file = io.BytesIO(image_bytes)
-        image_file.name = "image.png"
-    
-    params = {
-        "model": model,
-        "image": image_file,
-        "n": n,
-        "size": size if size != "auto" else "1024x1024"
-    }
-    
-    try:
-        if ctx: await ctx.info(f"Generating {n} variation(s) from image input...")
-        if ctx and drive_fast_path_used:
-            await ctx.info("Using Google Drive fast path (no temp files)")
-        if ctx:
-            await ctx.info(f"Image size: {len(image_bytes)} bytes")
-        
-        response = await client.images.create_variation(**params)
-        
-        if ctx: await ctx.info(f"Successfully generated {len(response.data)} variations")
-        
-        # Process results using standardized output handling
-        results = []
-        for i, img_data in enumerate(response.data):
-            b64_data = img_data.b64_json
-            
-            # Convert base64 to bytes
-            file_data = base64.b64decode(b64_data)
-            
-            # Generate filename with index
-            if n > 1:
-                filename = f"variation_{uuid.uuid4().hex[:8]}_{i+1}.{output_format}"
-            else:
-                filename = f"variation_{uuid.uuid4().hex[:8]}.{output_format}"
-            
-            # Upload to Google Drive
-            result = await _upload_to_drive(
-                file_data=file_data,
-                filename=filename,
-                description=f"Image variation {i+1 if n > 1 else ''} via Image-Tool-MCP Server",
-                folder_id=folder_id or "1y8eWyr68gPTiFTS2GuNODZp9zx4kg4FC",
-                ctx=ctx
-            )
-            results.append(result)
-        
-        return results if n > 1 else results[0]
+        return results
         
     except Exception as e:
-        error_msg = f"Failed to generate variations: {str(e)}"
-        if ctx: await ctx.error(error_msg)
-        logger.error(f"generate_variations error: {e}")
-        raise ValueError(error_msg)
-
-# Removed extract_text tool - use extract_document from Document-Tool-MCP instead
-# Document-Tool-MCP has superior text extraction with Gemini 2.5 Pro
+        if ctx: await ctx.error(f"Batch generation failed: {str(e)}")
+        raise ValueError(f"Failed to perform batch generation: {str(e)}")
 
 @mcp.tool()
-async def batch_process(
-    images: List[str],
-    operation: Literal["analyze_image", "image_metadata"],
-    operation_params: Dict[str, Any],
+async def get_video_metadata(
+    video_url_or_path: str,
     ctx: Context = None
 ) -> Dict[str, Any]:
-    """Process multiple images with the same operation.
-    
-    Supports local files, base64 data, and Google Drive URLs.
+    """Extract metadata from a video file or URL.
     
     Args:
-        images: List of images (file paths, base64 data, or Google Drive URLs)
-        operation: Operation to perform on all images
-        operation_params: Parameters for the operation
+        video_url_or_path: Video file path, URL, or Google Drive URL
         
     Returns:
-        Batch processing results for all images
+        Video metadata including duration, resolution, format, file size, etc.
     """
-    results = []
-    total_images = len(images)
-    
-    for i, image in enumerate(images):
-        if ctx:
-            await ctx.report_progress(i + 1, total_images, f"Processing image {i + 1}/{total_images}")
-        
-        try:
-            if operation == "analyze_image":
-                result = await analyze_image(image, **operation_params)
-            elif operation == "image_metadata":
-                result = await image_metadata(image, **operation_params)
-            else:
-                raise ValueError(f"Unsupported operation: {operation}")
-                
-            results.append({
-                "image": image,
-                "success": True,
-                "result": result
-            })
-            
-        except Exception as e:
-            results.append({
-                "image": image,
-                "success": False,
-                "error": str(e)
-            })
-    
-    return {
-        "success": True,
-        "total_processed": total_images,
-        "successful": len([r for r in results if r["success"]]),
-        "failed": len([r for r in results if not r["success"]]),
-        "results": results
-    }
-
-@mcp.tool()
-async def image_metadata(
-    image: str,
-    ctx: Context = None
-) -> Dict[str, Any]:
-    """Extract comprehensive metadata and properties from images.
-    
-    Supports local files and base64 data.
-    
-    Args:
-        image: Image to analyze (file path or base64)
-        
-    Returns:
-        Detailed image metadata including EXIF, dimensions, format, etc.
-    """
-    if not PIL_AVAILABLE:
-        return {"success": False, "error": "PIL/Pillow not available"}
-    
     try:
-        image_path = await get_file_path(image)
+        if ctx: await ctx.info(f"Extracting metadata from: {video_url_or_path}")
         
-        with PILImage.open(image_path) as img:
+        # Handle different input types
+        if video_url_or_path.startswith(('http://', 'https://', 'drive://')):
+            # For URLs, we would need to download or stream to analyze
+            # This is a placeholder for the actual implementation
+            return {
+                "source": video_url_or_path,
+                "type": "url",
+                "status": "analysis_not_implemented",
+                "message": "Video metadata extraction for URLs is not yet implemented. Please provide a local file path."
+            }
+        else:
+            # Local file path
+            video_path = await get_file_path(video_url_or_path)
+            
+            # Basic file info
+            from pathlib import Path
+            path_obj = Path(video_path)
+            
+            if not path_obj.exists():
+                raise ValueError(f"Video file not found: {video_path}")
+                
+            stat = path_obj.stat()
+            
             metadata = {
-                "success": True,
-                "file_path": str(image_path),
-                "format": img.format,
-                "mode": img.mode,
-                "size": {
-                    "width": img.width,
-                    "height": img.height,
-                    "total_pixels": img.width * img.height
-                },
-                "color_info": {
-                    "bands": img.getbands(),
-                    "palette": img.palette is not None
-                }
+                "file_path": str(video_path),
+                "filename": path_obj.name,
+                "file_size_bytes": stat.st_size,
+                "file_size_mb": round(stat.st_size / (1024 * 1024), 2),
+                "created_time": stat.st_ctime,
+                "modified_time": stat.st_mtime,
+                "extension": path_obj.suffix.lower(),
+                "status": "basic_info_only",
+                "message": "Advanced video analysis (duration, resolution, codec) requires additional dependencies (opencv-python, moviepy)"
             }
             
-            # Get file system info
-            stat = image_path.stat()
-            metadata["file_info"] = {
-                "size_bytes": stat.st_size,
-                "size_kb": stat.st_size / 1024,
-                "size_mb": stat.st_size / 1024 / 1024,
-                "modified": stat.st_mtime,
-                "created": stat.st_ctime
-            }
-            
-            # Try to get EXIF data
-            try:
-                exif = img._getexif()
-                if exif:
-                    exif_data = {}
-                    for tag_id, value in exif.items():
-                        tag = ExifTags.TAGS.get(tag_id, tag_id)
-                        exif_data[tag] = str(value)
-                    metadata["exif"] = exif_data
-            except Exception:
-                metadata["exif"] = "No EXIF data found"
-            
+            if ctx: await ctx.info(f"Basic metadata extracted for {path_obj.name}")
             return metadata
             
     except Exception as e:
-        return {"success": False, "error": str(e)}
-
-@mcp.tool()
-async def analyze_image(
-    image: str,
-    prompt: str = "Describe this image in detail, including objects, people, scenery, colors, mood, and any text visible.",
-    model: str = "auto",
-    max_tokens: int = 1000,
-    detail: Literal["low", "high", "auto"] = "auto",
-    ctx: Context = None
-) -> str:
-    """Analyze an image using OpenAI's Vision API to extract detailed information.
-    
-    Supports local files, base64 data, and HTTP URLs.
-    
-    Args:
-        image: Image to analyze (file path, base64 data, or HTTP URL)
-        prompt: Analysis prompt (what to look for in the image)
-        model: Vision model to use (gpt-4o, gpt-4o-mini, etc.)
-        max_tokens: Maximum tokens in response
-        detail: Image detail level for processing
-        
-    Returns:
-        Detailed analysis of the image content
-    """
-    app_context = get_app_context()
-    # Resolve model selection (env-scoped to analyze_image only)
-    env_model = os.getenv("ANALYZE_IMAGE_MODEL")
-    selected_model = model if model and model != "auto" else (env_model or "gpt-4o")
-    
-    # Always log model selection for debugging
-    logger.info(f"🔍 ANALYZE MODEL DEBUG: input='{model}', env='{env_model}', selected='{selected_model}'")
-    if ctx: 
-        await ctx.info(f"Model selection: input='{model}', env='{env_model}', selected='{selected_model}'")
-    
-    try:
-        if ctx: await ctx.info(f"Analyzing image with model {model}...")
-        
-        # Fast path for Google Drive inputs: avoid temp files
-        image_url: Optional[str] = None
-        if isinstance(image, str) and (
-            image.startswith('drive://') or 'drive.google.com' in image or 'docs.google.com' in image
-        ):
-            file_id = extract_file_id_from_url(image)
-            if file_id:
-                try:
-                    app_ctx = get_app_context()
-                    if app_ctx.drive_service:
-                        base64_data, mime_type = await load_image_from_drive(file_id)
-                        image_url = f"data:{mime_type};base64,{base64_data}"
-                        if ctx:
-                            await ctx.info("Using Google Drive fast path (no temp files)")
-                except Exception:
-                    image_url = None
-        
-        if image_url is None:
-            # Fallback: resolve to file path then load as base64
-            file_path = await get_file_path(image)
-            base64_data, mime_type = await load_image_as_base64(file_path)
-            image_url = f"data:{mime_type};base64,{base64_data}"
-        
-        # Vertex Gemini path
-        if selected_model.startswith("vertex:") and VERTEX_GEN_AVAILABLE and app_context.vertex_initialized:
-            try:
-                model_id = selected_model.split(":", 1)[1]
-                logger.info(f"🚀 VERTEX GEMINI CONFIRMED: Using {model_id} for image analysis")
-                if ctx: await ctx.info(f"Analyzing image with Vertex Gemini model: {model_id}")
-                gen = GenerativeModel(model_id)
-                # Get actual model name after instantiation
-                actual_model_used = getattr(gen, 'model_name', model_id) or model_id
-                logger.info(f"🚀 VERTEX GEMINI CONFIRMED: API call using {actual_model_used}")
-                
-                parts = [Part.from_text(prompt), Part.from_data(mime_type=image_url.split(';')[0].split(':',1)[1], data=base64.b64decode(image_url.split(',')[1]))]
-                resp = gen.generate_content(parts)
-                # Handle streaming vs non-streaming
-                text = None
-                if hasattr(resp, "text") and resp.text:
-                    text = resp.text
-                elif hasattr(resp, "candidates") and resp.candidates:
-                    try:
-                        text = resp.candidates[0].content.parts[0].text
-                    except Exception:
-                        text = None
-                if not text:
-                    text = str(resp)
-                if ctx: await ctx.info(f"Image analysis completed successfully with {actual_model_used}")
-                return f"🔍 Analysis with {actual_model_used}: {text}"
-            except Exception as ve:
-                if ctx: await ctx.info(f"Vertex analysis failed, falling back to OpenAI: {ve}")
-                # Fallback to OpenAI below
-        
-        # OpenAI Vision path
-        client = app_context.openai_client
-        check_openai_client(client)
-        actual_model = selected_model if not selected_model.startswith("vertex:") else "gpt-4o"
-        logger.info(f"🚀 OPENAI VISION CONFIRMED: Using {actual_model} for image analysis")
-        response = await client.chat.completions.create(
-            model=actual_model,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": image_url,
-                                "detail": detail
-                            }
-                        }
-                    ]
-                }
-            ],
-            max_tokens=max_tokens
-        )
-        
-        # Get actual model from response
-        actual_model_used = getattr(response, 'model', actual_model)
-        logger.info(f"🚀 OPENAI VISION CONFIRMED: API response from {actual_model_used}")
-        
-        analysis = response.choices[0].message.content
-        if ctx: await ctx.info(f"Image analysis completed successfully with {actual_model_used}")
-        return f"🔍 Analysis with {actual_model_used}: {analysis}"
-        
-    except Exception as e:
-        error_msg = f"Failed to analyze image: {str(e)}"
-        if ctx: await ctx.error(error_msg)
-        raise ValueError(error_msg)
+        if ctx: await ctx.error(f"Failed to extract video metadata: {str(e)}")
+        raise ValueError(f"Failed to extract video metadata: {str(e)}")
 
 
 # =============================================================================
@@ -2432,246 +1989,6 @@ async def search_videos(
         logger.error(error_msg)
         return {"error": error_msg, "success": False}
 
-async def _upload_image_internal(
-    image_path: Optional[str] = None,
-    image_data: Optional[str] = None,
-    image_url: Optional[str] = None,
-    filename: Optional[str] = None,
-    folder_id: Optional[str] = None,
-    description: Optional[str] = None,
-    ctx: Context = None
-) -> Dict[str, Any]:
-    """
-    Upload an image to Google Drive.
-    
-    Args:
-        image_path: Local image path (for local files)
-        image_data: Base64 encoded image data (for generated images)
-        image_url: HTTP URL to image (for remote images)
-        filename: Name for the uploaded file
-        folder_id: Google Drive folder ID (default: root)
-        description: Optional description for the image
-        
-    Returns:
-        Upload result with file ID and metadata
-    """
-    try:
-        app_context = get_app_context()
-        drive_service = app_context.drive_service
-        
-        if not drive_service:
-            return {"error": "Google Drive not configured. Please set GOOGLE_OAUTH_TOKEN or GOOGLE_SERVICE_ACCOUNT_JSON", "success": False}
-        
-        # Validate input - exactly one source must be provided
-        input_count = sum(bool(x) for x in [image_path, image_data, image_url])
-        if input_count != 1:
-            return {"error": "Exactly one of image_path, image_data, or image_url must be provided", "success": False}
-        
-        # Handle different input types
-        temp_file_path = None
-        actual_filename = None
-        
-        if image_path:
-            # Local file path mode
-            file_path = await get_file_path(image_path)
-            actual_filename = filename or Path(file_path).name
-            temp_file_path = file_path
-            
-            if ctx:
-                await ctx.info(f"Uploading local image: {image_path}")
-                
-        elif image_data:
-            # Base64 data mode
-            if not filename:
-                return {"error": "filename is required when using image_data", "success": False}
-            
-            try:
-                # Handle data URLs
-                if image_data.startswith('data:'):
-                    header, data = image_data.split(',', 1)
-                    file_bytes = base64.b64decode(data)
-                    
-                    # Extract MIME type for extension
-                    mime_match = re.search(r'data:([^;]+)', header)
-                    if mime_match and not filename.endswith(('.png', '.jpg', '.jpeg', '.webp', '.gif')):
-                        mime_type = mime_match.group(1)
-                        extension = mimetypes.guess_extension(mime_type) or '.png'
-                        if not filename.endswith(extension):
-                            filename = f"{filename}{extension}"
-                else:
-                    # Raw base64
-                    file_bytes = base64.b64decode(image_data)
-                    if not filename.endswith(('.png', '.jpg', '.jpeg', '.webp', '.gif')):
-                        filename = f"{filename}.png"
-                
-                # Create temporary file
-                actual_filename = filename
-                safe_filename = re.sub(r'[^\w\-_.]', '_', actual_filename)
-                temp_file_path = app_context.temp_dir / f"upload_{secrets.token_urlsafe(8)}_{safe_filename}"
-                
-                # Write decoded data to temp file
-                async with aiofiles.open(temp_file_path, 'wb') as f:
-                    await f.write(file_bytes)
-                
-                if ctx:
-                    await ctx.info(f"Created temp file from base64 data: {temp_file_path}")
-                    
-            except Exception as e:
-                return {"error": f"Failed to decode base64 data: {str(e)}", "success": False}
-                
-        elif image_url:
-            # URL fetch mode
-            if not filename:
-                return {"error": "filename is required when using image_url", "success": False}
-            
-            if not app_context.http_client:
-                return {"error": "HTTP client not available for URL fetching", "success": False}
-            
-            try:
-                # Fetch image from URL
-                response = await app_context.http_client.get(image_url)
-                response.raise_for_status()
-                
-                # Create temporary file
-                actual_filename = filename
-                safe_filename = re.sub(r'[^\w\-_.]', '_', actual_filename)
-                temp_file_path = app_context.temp_dir / f"url_{secrets.token_urlsafe(8)}_{safe_filename}"
-                
-                # Write fetched data to temp file
-                async with aiofiles.open(temp_file_path, 'wb') as f:
-                    await f.write(response.content)
-                
-                if ctx:
-                    await ctx.info(f"Downloaded image from URL: {image_url}")
-                    
-            except Exception as e:
-                return {"error": f"Failed to fetch image from URL: {str(e)}", "success": False}
-        
-        # Determine mime type
-        mime_type, _ = mimetypes.guess_type(actual_filename)
-        if not mime_type or not mime_type.startswith('image/'):
-            mime_type = 'image/png'  # Default for images
-        
-        # Prepare file metadata
-        file_metadata = {
-            'name': actual_filename,
-            'description': description or f"Image uploaded via Image-Tool-MCP Server"
-        }
-        
-        # Set parent folder if specified
-        if folder_id and folder_id != "root":
-            file_metadata['parents'] = [folder_id]
-        
-        # Create media upload object
-        media = MediaFileUpload(
-            str(temp_file_path),
-            mimetype=mime_type,
-            resumable=True
-        )
-        
-        # Upload file
-        request = drive_service.files().create(
-            body=file_metadata,
-            media_body=media,
-            fields='id, name, mimeType, size, createdTime, webViewLink'
-        )
-        
-        # Execute upload with progress tracking
-        response = None
-        while response is None:
-            status, response = request.next_chunk()
-            if ctx and status:
-                await ctx.report_progress(int(status.progress() * 100), 100)
-        
-        if ctx:
-            await ctx.info(f"Upload completed: {response['name']}")
-        
-        # Generate direct download URL
-        file_id = response['id']
-        direct_url = f"https://drive.google.com/uc?export=download&id={file_id}"
-        
-        return {
-            "success": True,
-            "file_id": file_id,
-            "name": response['name'],
-            "mime_type": response['mimeType'],
-            "size": int(response.get('size', 0)),
-            "created_time": response['createdTime'],
-            "web_view_link": response['webViewLink'],
-            "direct_download_url": direct_url,
-            "drive_url": f"drive://{file_id}",
-            "folder_id": folder_id or "root"
-        }
-        
-    except Exception as e:
-        error_msg = f"Error uploading image: {str(e)}"
-        if ctx: await ctx.error(error_msg)
-        logger.error(error_msg)
-        return {"error": error_msg, "success": False}
-
-
-@mcp.tool()
-async def get_image_from_drive(
-    file_id_or_url: str,
-    ctx: Context = None
-) -> Dict[str, Any]:
-    """
-    Get direct download URL for an image in Google Drive.
-    
-    Args:
-        file_id_or_url: Google Drive file ID, share URL, or drive:// URL
-        
-    Returns:
-        Direct download URL and image metadata
-    """
-    try:
-        app_context = get_app_context()
-        drive_service = app_context.drive_service
-        
-        if not drive_service:
-            return {"error": "Google Drive not configured. Please set GOOGLE_OAUTH_TOKEN or GOOGLE_SERVICE_ACCOUNT_JSON", "success": False}
-        
-        # Extract file ID from various URL formats
-        file_id = extract_file_id_from_url(file_id_or_url)
-        if not file_id:
-            file_id = file_id_or_url  # Assume it's a direct file ID
-        
-        if ctx:
-            await ctx.info(f"Getting image info for: {file_id}")
-        
-        # Get file metadata
-        file_metadata = drive_service.files().get(
-            fileId=file_id,
-            fields="id, name, mimeType, size, createdTime, modifiedTime, webViewLink, thumbnailLink"
-        ).execute()
-        
-        # Verify it's an image
-        mime_type = file_metadata['mimeType']
-        if not mime_type.startswith('image/'):
-            return {"error": f"File is not an image (MIME type: {mime_type})", "success": False}
-        
-        # Generate direct download URL
-        direct_url = f"https://drive.google.com/uc?export=download&id={file_id}"
-        
-        return {
-            "success": True,
-            "file_id": file_id,
-            "name": file_metadata['name'],
-            "mime_type": mime_type,
-            "size": int(file_metadata.get('size', 0)),
-            "created_time": file_metadata['createdTime'],
-            "modified_time": file_metadata['modifiedTime'],
-            "web_view_link": file_metadata.get('webViewLink', ''),
-            "thumbnail_link": file_metadata.get('thumbnailLink', ''),
-            "direct_download_url": direct_url,
-            "drive_url": f"drive://{file_id}"
-        }
-        
-    except Exception as e:
-        error_msg = f"Error getting image from Drive: {str(e)}"
-        if ctx: await ctx.error(error_msg)
-        logger.error(error_msg)
-        return {"error": error_msg, "success": False}
 
 # =============================================================================
 # SERVER STARTUP
@@ -2679,7 +1996,7 @@ async def get_image_from_drive(
 
 if __name__ == "__main__":
     # Parse command line arguments
-    parser = argparse.ArgumentParser(description="Image Tool MCP Server")
+    parser = argparse.ArgumentParser(description="Video Tool MCP Server")
     parser.add_argument("--transport", default="streamable-http", choices=["http", "stdio", "streamable-http"], 
                        help="Transport method (http or stdio)")
     parser.add_argument("--host", default=os.getenv("HOST", "0.0.0.0"),
