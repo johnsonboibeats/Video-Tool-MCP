@@ -1574,7 +1574,6 @@ async def _monitor_and_upload_operation(
 async def create_video(
     prompt: str,
     ctx: Context = None,
-    model: Literal["veo-2.0-generate-001", "veo-3.0-generate-preview", "veo-3.0-fast-generate-preview", "auto"] = "auto",
     aspect_ratio: Literal["16:9", "9:16", "auto"] = "auto",
     negative_prompt: Optional[str] = None,
     n: int = 1,
@@ -1608,19 +1607,30 @@ async def create_video(
 
     # Determine model selection (scoped to create_video only)
     env_model = os.getenv("CREATE_VIDEO_MODEL")
-    selected_model = model if model and model != "auto" else (env_model or "veo-3.0-generate-preview")
+    # Use environment variable if set, otherwise use default
+    selected_model = env_model or "gemini:veo-3.0-generate-preview"
+    
+    # Parse provider and model from standardized format
+    if ":" in selected_model:
+        provider, model_name = selected_model.split(":", 1)
+    else:
+        # Backwards compatibility for old format
+        if selected_model.startswith("veo-"):
+            provider, model_name = "gemini", selected_model
+        else:
+            provider, model_name = "gemini", selected_model  # Default to gemini
     
     # Always log model selection for debugging
-    logger.info(f"🎬 VIDEO MODEL DEBUG: input='{model}', env='{env_model}', selected='{selected_model}'")
+    logger.info(f"🎬 VIDEO MODEL DEBUG: env='{env_model}', selected='{selected_model}', provider='{provider}', model='{model_name}'")
     if ctx: 
-        await ctx.info(f"Model selection: input='{model}', env='{env_model}', selected='{selected_model}'")
+        await ctx.info(f"Using {provider} provider with model: {model_name}")
 
     # Validate inputs according to model limits
     if len(prompt) > 32000:
         raise ValueError("Prompt must be 32000 characters or less")
     
     # Different video limits per model
-    if selected_model == "veo-2.0-generate-001":
+    if model_name == "veo-2.0-generate-001":
         if n < 1 or n > 4:
             raise ValueError("Number of videos must be between 1 and 4 (Veo2 API limit)")
     else:  # Veo3 models
@@ -1648,11 +1658,15 @@ async def create_video(
         config = genai_types.GenerateVideosConfig(**cfg_kwargs)
 
         if ctx:
-            await ctx.info(f"Generating {n} video(s) with Veo3 model: {selected_model}")
+            await ctx.info(f"Generating {n} video(s) with {provider} model: {model_name}")
+        
+        # Validate provider
+        if provider != "gemini":
+            raise ValueError(f"Unsupported provider '{provider}' for video generation. Only 'gemini' is supported.")
         
         # Generate videos
         operation = client.models.generate_videos(
-            model=selected_model,
+            model=model_name,
             prompt=prompt,
             config=config,
         )
@@ -1667,7 +1681,7 @@ async def create_video(
         asyncio.create_task(_monitor_and_upload_operation(
             operation_name=operation.name,
             prompt=prompt,
-            selected_model=selected_model,
+            selected_model=model_name,
             folder_id=folder_id or "1y8eWyr68gPTiFTS2GuNODZp9zx4kg4FC",
             expected_count=n
         ))
@@ -1676,7 +1690,7 @@ async def create_video(
         return {
             "operation_id": operation.name,
             "status": "started",
-            "message": f"Video generation started with {selected_model}. Videos will be automatically uploaded to Google Drive when ready.",
+            "message": f"Video generation started with {provider} {model_name}. Videos will be automatically uploaded to Google Drive when ready.",
             "estimated_time": "1-6 minutes",
             "expected_videos": n,
             "check_status_with": f"get_video_operation_status('{operation.name}')"
@@ -1693,7 +1707,7 @@ async def create_video_from_image(
     image: str,
     prompt: str,
     ctx: Context = None,
-    model: Literal["veo-2.0-generate-001", "veo-3.0-generate-preview", "veo-3.0-fast-generate-preview"] = "veo-3.0-generate-preview",
+    model: str = "gemini:veo-3.0-generate-preview",
     aspect_ratio: Literal["16:9", "9:16"] = "16:9",
     negative_prompt: Optional[str] = None,
     folder_id: Optional[str] = None,
@@ -1723,11 +1737,25 @@ async def create_video_from_image(
     """
     app_context = get_app_context()
     
+    # Parse provider and model from standardized format
+    if ":" in model:
+        provider, model_name = model.split(":", 1)
+    else:
+        # Backwards compatibility for old format
+        if model.startswith("veo-"):
+            provider, model_name = "gemini", model
+        else:
+            provider, model_name = "gemini", model  # Default to gemini
+    
     try:
         if not GENAI_AVAILABLE or not app_context.gemini_configured:
             raise ValueError("Google Gen AI SDK not available or Gemini API key not configured; set GEMINI_API_KEY")
         
-        if ctx: await ctx.info(f"Generating video from image with model {model}...")
+        # Validate provider
+        if provider != "gemini":
+            raise ValueError(f"Unsupported provider '{provider}' for video generation. Only 'gemini' is supported.")
+        
+        if ctx: await ctx.info(f"Generating video from image with {provider} model {model_name}...")
         
         # Validate prompt length
         if len(prompt) > 32000:

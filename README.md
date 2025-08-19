@@ -60,11 +60,18 @@ For detailed OAuth documentation, see [OAUTH_IMPLEMENTATION.md](OAUTH_IMPLEMENTA
 - `GOOGLE_OAUTH_TOKEN`: OAuth token JSON for Google Drive access (videos are auto-uploaded to Drive)
 
 ### Optional
-#### Gemini API (Veo3) for create_video (Required for video generation)
-- Models available: `veo-3.0-generate-preview`, `veo-3.0-fast-generate-preview`
-- Uses Gemini API for streamlined video generation
+#### Model Configuration (Standardized Format)
+The server supports a standardized `provider:model-name` format for specifying models:
 
-Note: Gemini API configuration is used by `create_video` for video generation. Other tools continue using OpenAI.
+- `CREATE_VIDEO_MODEL`: Default model for video generation tools. Examples:
+  - `gemini:veo-3.0-generate-preview` (Gemini API - default)
+  - `gemini:veo-3.0-fast-generate-preview` (Gemini API)
+  - `gemini:veo-2.0-generate-001` (Gemini API)
+  - Legacy format still supported: `veo-3.0-generate-preview`, `veo-3.0-fast-generate-preview`, etc.
+
+**Model Format**: Use `provider:model-name` format for explicit provider selection, or legacy model names for backwards compatibility.
+
+Note: Video generation uses Gemini API. Only Gemini provider is supported for video models. Other tools continue using OpenAI for analysis.
 
 #### Server Configuration (Optional)
 - `PORT`: Server port (default: 8080)
