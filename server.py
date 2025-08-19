@@ -10,10 +10,8 @@ print(f"🚀 Starting Video-Tool-MCP Server...")
 print(f"🔧 Python version: {sys.version}")
 print(f"📁 Working directory: {os.getcwd()}")
 print(f"🌍 Environment check:")
-print(f"   GOOGLE_API_KEY: {'✅ Set' if os.getenv('GOOGLE_API_KEY') else '❌ Missing'}")
-print(f"   GOOGLE_CLOUD_PROJECT: {os.getenv('GOOGLE_CLOUD_PROJECT', '❌ Missing')}")
-print(f"   VERTEX_LOCATION: {os.getenv('VERTEX_LOCATION', '❌ Missing')}")
-print(f"   GOOGLE_APPLICATION_CREDENTIALS: {'✅ Set' if os.getenv('GOOGLE_APPLICATION_CREDENTIALS') else '❌ Missing'}")
+print(f"   GEMINI_API_KEY: {'✅ Set' if os.getenv('GEMINI_API_KEY') else '❌ Missing'}")
+print(f"   OPENAI_API_KEY: {'✅ Set' if os.getenv('OPENAI_API_KEY') else '❌ Missing'}")
 print(f"   PORT: {os.getenv('PORT', '8080')}")
 
 # Suppress warnings for cleaner deployment
@@ -127,10 +125,9 @@ class AppContext(BaseModel):
     http_client: Optional[httpx.AsyncClient] = None
     download_semaphore: Optional[asyncio.Semaphore] = None
     download_cache: Dict[str, Dict[str, Any]] = {}
-    # Vertex AI configuration
-    vertex_project: Optional[str] = None
-    vertex_location: Optional[str] = None
-    vertex_configured: bool = False
+    # Gemini API configuration
+    gemini_api_key: Optional[str] = None
+    gemini_configured: bool = False
 
 # Global app context for FastMCP tools
 _global_app_context: Optional[AppContext] = None
@@ -489,12 +486,12 @@ def initialize_app_context():
         except Exception:
             pass
 
-        vertex_project = os.getenv("GOOGLE_CLOUD_PROJECT") or os.getenv("VERTEX_PROJECT")
-        vertex_location = os.getenv("VERTEX_LOCATION", "us-central1")
-        # Consider Vertex "configured" for GenAI usage if a project is configured
-        vertex_configured = bool(vertex_project)
-        if vertex_configured:
-            logger.info(f"Vertex configuration detected for project {vertex_project} in {vertex_location} (GenAI SDK mode)")
+        gemini_api_key = os.getenv("GEMINI_API_KEY")
+        gemini_configured = bool(gemini_api_key)
+        if gemini_configured:
+            logger.info("Gemini API configuration detected")
+        else:
+            logger.warning("Gemini API key not set - video generation will fail (default is veo-3.0-generate-preview)")
 
         # Create context
         context = AppContext(
@@ -504,9 +501,8 @@ def initialize_app_context():
             http_client=http_client,
             download_semaphore=asyncio.Semaphore(int(os.getenv("MAX_CONCURRENT_DOWNLOADS", "5"))),
             download_cache={},
-            vertex_project=vertex_project,
-            vertex_location=vertex_location,
-            vertex_configured=vertex_configured
+            gemini_api_key=gemini_api_key,
+            gemini_configured=gemini_configured
         )
         
         # Set global context for FastMCP tools
@@ -645,15 +641,13 @@ async def health_check(request: Request):
         except Exception:
             response_data["google_drive_configured"] = False
 
-        # Expose Vertex status
+        # Expose Gemini API status
         try:
-            response_data["vertex_configured"] = _global_app_context.vertex_configured if _global_app_context else False
-            response_data["vertex_project"] = _global_app_context.vertex_project if _global_app_context else None
-            response_data["vertex_location"] = _global_app_context.vertex_location if _global_app_context else None
+            response_data["gemini_configured"] = _global_app_context.gemini_configured if _global_app_context else False
+            response_data["gemini_api_key_present"] = bool(_global_app_context.gemini_api_key) if _global_app_context else False
         except Exception:
-            response_data["vertex_configured"] = False
-            response_data["vertex_project"] = None
-            response_data["vertex_location"] = None
+            response_data["gemini_configured"] = False
+            response_data["gemini_api_key_present"] = False
             
         logger.info(f"Health check response: {response_data}")
         # Lazy-start periodic cleanup loop after server has an event loop
@@ -1456,6 +1450,123 @@ async def get_file_path(file_input: str) -> str:
     raise ValueError("Invalid file path: must be an absolute path, base64 data, HTTP URL, or Google Drive URL (drive://, drive.google.com, docs.google.com)")
 
 # =============================================================================
+# BACKGROUND OPERATION MONITORING
+# =============================================================================
+
+# Global storage for operation results (in production, use Redis or database)
+_operation_results = {}
+
+async def _monitor_and_upload_operation(
+    operation_name: str,
+    prompt: str,
+    selected_model: str, 
+    folder_id: str,
+    expected_count: int
+):
+    """Background task to monitor operation completion and auto-upload videos"""
+    try:
+        logger.info(f"🎬 Background monitoring started for operation: {operation_name}")
+        
+        # Store initial status
+        _operation_results[operation_name] = {
+            "status": "in_progress",
+            "prompt": prompt,
+            "model": selected_model,
+            "expected_videos": expected_count,
+            "videos": [],
+            "errors": [],
+            "started_at": time.time()
+        }
+        
+        # Initialize client for background task
+        app_context = get_app_context()
+        if not GENAI_AVAILABLE or not app_context.gemini_configured:
+            raise ValueError("Gemini API not configured for background processing")
+        
+        client = genai_sdk.Client(api_key=app_context.gemini_api_key)
+        
+        # Poll operation status until completion
+        operation = genai_types.GenerateVideosOperation(name=operation_name)
+        
+        while not operation.done:
+            await asyncio.sleep(20)  # Check every 20 seconds
+            try:
+                operation = client.operations.get(operation)
+                logger.info(f"🔄 Operation {operation_name} status: {'completed' if operation.done else 'in_progress'}")
+            except Exception as e:
+                logger.error(f"Failed to poll operation {operation_name}: {e}")
+                await asyncio.sleep(60)  # Wait longer on error
+                continue
+        
+        logger.info(f"✅ Operation {operation_name} completed! Processing videos...")
+        
+        # Extract and upload videos
+        if not hasattr(operation, 'response') or not hasattr(operation.response, 'generated_videos'):
+            raise ValueError("No videos found in operation response")
+        
+        generated_videos = operation.response.generated_videos
+        uploaded_videos = []
+        
+        for i, generated_video in enumerate(generated_videos):
+            try:
+                # Generate filename
+                if len(generated_videos) > 1:
+                    filename = f"generated_video_{uuid.uuid4().hex[:8]}_{i+1}.mp4"
+                else:
+                    filename = f"generated_video_{uuid.uuid4().hex[:8]}.mp4"
+                
+                logger.info(f"📥 Downloading video {i+1}/{len(generated_videos)}: {filename}")
+                
+                # Download video data
+                client.files.download(file=generated_video.video)
+                video_data = generated_video.video.read()
+                
+                logger.info(f"📤 Uploading {filename} to Google Drive ({len(video_data)} bytes)")
+                
+                # Upload to Google Drive
+                web_view_link = await _upload_to_drive(
+                    file_data=video_data,
+                    filename=filename,
+                    description=f"Generated video with {selected_model}: {prompt[:100]}...",
+                    folder_id=folder_id,
+                    ctx=None  # No context in background task
+                )
+                
+                uploaded_videos.append({
+                    "filename": filename,
+                    "url": web_view_link,
+                    "size_bytes": len(video_data)
+                })
+                
+                logger.info(f"✅ Video {i+1} uploaded successfully: {web_view_link}")
+                
+            except Exception as e:
+                error_msg = f"Failed to process video {i+1}: {str(e)}"
+                logger.error(error_msg)
+                _operation_results[operation_name]["errors"].append(error_msg)
+        
+        # Update final status
+        _operation_results[operation_name].update({
+            "status": "completed",
+            "videos": uploaded_videos,
+            "completed_at": time.time(),
+            "total_videos": len(uploaded_videos)
+        })
+        
+        logger.info(f"🎉 Background processing completed for {operation_name}: {len(uploaded_videos)} videos uploaded")
+        
+    except Exception as e:
+        error_msg = f"Background processing failed for {operation_name}: {str(e)}"
+        logger.error(error_msg)
+        
+        # Update error status
+        _operation_results[operation_name] = {
+            "status": "failed", 
+            "error": error_msg,
+            "completed_at": time.time()
+        }
+
+# =============================================================================
 # VIDEO PROCESSING TOOLS
 # =============================================================================
 
@@ -1472,10 +1583,10 @@ async def create_video(
     generate_audio: bool = True,
     person_generation: bool = True,
     seed: Optional[int] = None
-) -> Union[str, list[str]]:
+) -> Dict[str, Any]:
     """Generate videos from text prompts using Google Veo3.
     
-    Automatically uploads all generated videos to Google Drive and returns web view URLs.
+    Returns operation ID immediately and automatically uploads videos to Google Drive when ready.
     
     Args:
         prompt: Text description of the video to generate (max 32000 chars)
@@ -1490,7 +1601,7 @@ async def create_video(
         seed: Optional seed for reproducible generation
         
     Returns:
-        Google Drive web view URL(s) for generated videos
+        Operation information with ID to check status. Videos auto-upload to Google Drive when ready.
     """
     # Get application context
     app_context = get_app_context()
@@ -1521,15 +1632,11 @@ async def create_video(
         await ctx.report_progress(0, n, f"Starting generation of {n} videos...")
     
     try:
-        if not GENAI_AVAILABLE or not app_context.vertex_project:
-            raise ValueError("Google Gen AI SDK not available or Vertex project not configured; set GOOGLE_CLOUD_PROJECT/VERTEX_PROJECT and VERTEX_LOCATION")
+        if not GENAI_AVAILABLE or not app_context.gemini_configured:
+            raise ValueError("Google Gen AI SDK not available or Gemini API key not configured; set GEMINI_API_KEY and install google-genai")
         
-        # Use Google Gen AI SDK (Vertex mode) for Veo3
-        client = genai_sdk.Client(
-            vertexai=True,
-            project=app_context.vertex_project,
-            location=app_context.vertex_location or "us-central1",
-        )
+        # Use Google Gen AI SDK (Gemini API mode) for Veo3
+        client = genai_sdk.Client(api_key=app_context.gemini_api_key)
 
         # Prepare video generation config
         cfg_kwargs = {}
@@ -1550,84 +1657,30 @@ async def create_video(
             config=config,
         )
         
-        # Wait for completion (Veo3 takes 11 seconds to 6 minutes)
+        # Return operation ID immediately and start background processing
         if ctx:
-            await ctx.info("Video generation in progress... This may take 1-6 minutes.")
+            await ctx.info(f"Video generation started! Operation ID: {operation.name}")
+            await ctx.info("Videos will be automatically uploaded to Google Drive when ready.")
         
-        # Poll operation status until completion
-        import asyncio
+        # Start background task to monitor and upload when complete
         import time
+        asyncio.create_task(_monitor_and_upload_operation(
+            operation_name=operation.name,
+            prompt=prompt,
+            selected_model=selected_model,
+            folder_id=folder_id or "1y8eWyr68gPTiFTS2GuNODZp9zx4kg4FC",
+            expected_count=n
+        ))
         
-        while not operation.done:
-            if ctx:
-                await ctx.info("Polling operation status...")
-            await asyncio.sleep(20)  # Check every 20 seconds
-            operation = client.operations.get(operation)
-        
-        if ctx:
-            await ctx.info("Video generation completed! Processing results...")
-        
-        # Extract generated videos from operation result
-        if not hasattr(operation, 'response') or not hasattr(operation.response, 'generated_videos'):
-            raise ValueError("No videos found in operation response")
-        
-        generated_videos = operation.response.generated_videos
-        if len(generated_videos) != n:
-            logger.warning(f"Expected {n} videos, got {len(generated_videos)}")
-        
-        # Process and upload each video
-        videos = []
-        
-        for i, generated_video in enumerate(generated_videos):
-            if n > 1 and ctx:
-                await ctx.report_progress(i + 1, len(generated_videos), f"Processing video {i + 1}/{len(generated_videos)}")
-            
-            # Generate filename for the video
-            if len(generated_videos) > 1:
-                filename = f"generated_video_{uuid.uuid4().hex[:8]}_{i+1}.mp4"
-            else:
-                filename = f"generated_video_{uuid.uuid4().hex[:8]}.mp4"
-            
-            try:
-                # Download video data from the API
-                if ctx:
-                    await ctx.info(f"Downloading video data for {filename}")
-                
-                # Download the video file data
-                client.files.download(file=generated_video.video)
-                video_data = generated_video.video.read()
-                
-                if ctx:
-                    await ctx.info(f"Video downloaded, size: {len(video_data)} bytes")
-                
-                # Upload to Google Drive
-                web_view_link = await _upload_to_drive(
-                    file_data=video_data,
-                    filename=filename,
-                    description=f"Generated video with {selected_model}: {prompt[:100]}...",
-                    folder_id=folder_id or "1y8eWyr68gPTiFTS2GuNODZp9zx4kg4FC",
-                    ctx=ctx
-                )
-                
-                videos.append(web_view_link)
-                
-                if ctx:
-                    await ctx.info(f"Video {i+1} successfully uploaded to Google Drive")
-                    
-            except Exception as e:
-                error_msg = f"Failed to process video {i+1}: {str(e)}"
-                logger.error(error_msg)
-                if ctx:
-                    await ctx.error(error_msg)
-                videos.append(f"ERROR: {error_msg}")
-        
-        # Log response preparation
-        if ctx: 
-            await ctx.info(f"Video generation template completed for {len(videos)} video(s)")
-        
-        # Return results
-        result = videos if n > 1 else videos[0]
-        return result
+        # Return operation info immediately
+        return {
+            "operation_id": operation.name,
+            "status": "started",
+            "message": f"Video generation started with {selected_model}. Videos will be automatically uploaded to Google Drive when ready.",
+            "estimated_time": "1-6 minutes",
+            "expected_videos": n,
+            "check_status_with": f"get_video_operation_status('{operation.name}')"
+        }
             
     except Exception as e:
         if ctx: await ctx.error(f"Video generation failed: {str(e)}")
@@ -1671,8 +1724,8 @@ async def create_video_from_image(
     app_context = get_app_context()
     
     try:
-        if not GENAI_AVAILABLE or not app_context.vertex_project:
-            raise ValueError("Google Gen AI SDK not available or Vertex AI not configured")
+        if not GENAI_AVAILABLE or not app_context.gemini_configured:
+            raise ValueError("Google Gen AI SDK not available or Gemini API key not configured; set GEMINI_API_KEY")
         
         if ctx: await ctx.info(f"Generating video from image with model {model}...")
         
@@ -1721,20 +1774,80 @@ async def get_video_operation_status(
         operation_id: The operation ID returned from video generation
         
     Returns:
-        Operation status information including completion state and progress
+        Operation status information including completion state, progress, and video URLs
     """
     try:
-        if not GENAI_AVAILABLE:
-            raise ValueError("Google Gen AI SDK not available")
-            
         if ctx: await ctx.info(f"Checking status for operation: {operation_id}")
         
-        # Note: This is a placeholder for the actual operation status API call
-        raise NotImplementedError(
-            "Operation status checking is not yet implemented. "
-            "This feature requires additional API integration with Google's operation management system."
-        )
+        # Check stored results from background processing
+        if operation_id not in _operation_results:
+            # Try to get status directly from API as fallback
+            if not GENAI_AVAILABLE:
+                return {
+                    "status": "unknown",
+                    "error": "Operation not found in local storage and Google Gen AI SDK not available"
+                }
+            
+            try:
+                app_context = get_app_context()
+                client = genai_sdk.Client(api_key=app_context.gemini_api_key)
+                operation = client.operations.get(operation_id)
+                
+                return {
+                    "status": "completed" if operation.done else "in_progress",
+                    "operation_id": operation_id,
+                    "message": "Operation found via API, but auto-upload may not be active for this operation."
+                }
+            except Exception as e:
+                return {
+                    "status": "not_found",
+                    "error": f"Operation {operation_id} not found: {str(e)}"
+                }
         
+        # Get stored results
+        result = _operation_results[operation_id]
+        
+        if result["status"] == "in_progress":
+            import time
+            elapsed = time.time() - result["started_at"]
+            return {
+                "status": "in_progress",
+                "operation_id": operation_id,
+                "prompt": result["prompt"],
+                "model": result["model"],
+                "expected_videos": result["expected_videos"],
+                "elapsed_time": f"{elapsed:.0f} seconds",
+                "message": "Video generation in progress. Videos will be automatically uploaded when ready."
+            }
+        
+        elif result["status"] == "completed":
+            return {
+                "status": "completed",
+                "operation_id": operation_id,
+                "prompt": result["prompt"],
+                "model": result["model"],
+                "total_videos": result["total_videos"],
+                "videos": result["videos"],
+                "errors": result.get("errors", []),
+                "processing_time": f"{result['completed_at'] - result['started_at']:.0f} seconds",
+                "message": f"✅ Generation complete! {result['total_videos']} video(s) uploaded to Google Drive."
+            }
+        
+        elif result["status"] == "failed":
+            return {
+                "status": "failed",
+                "operation_id": operation_id,
+                "error": result["error"],
+                "message": "❌ Video generation failed. Check the error details above."
+            }
+        
+        else:
+            return {
+                "status": "unknown",
+                "operation_id": operation_id,
+                "result": result
+            }
+            
     except Exception as e:
         if ctx: await ctx.error(f"Failed to check operation status: {str(e)}")
         raise ValueError(f"Failed to check operation status: {str(e)}")

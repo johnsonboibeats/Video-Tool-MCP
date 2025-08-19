@@ -55,35 +55,24 @@ For detailed OAuth documentation, see [OAUTH_IMPLEMENTATION.md](OAUTH_IMPLEMENTA
 ## Environment Variables
 
 ### Required
-- `GOOGLE_API_KEY`: Your Google API key for Veo3 video generation
+- `GEMINI_API_KEY`: Your Gemini API key for Veo3 video generation
 - `OPENAI_API_KEY`: Your OpenAI API key for video analysis (used by most tools)
+- `GOOGLE_OAUTH_TOKEN`: OAuth token JSON for Google Drive access (videos are auto-uploaded to Drive)
 
 ### Optional
-#### Google Veo3 for create_video (Required for video generation)
-- `CREATE_VIDEO_MODEL`: Default model for the `create_video` tool only. Examples:
-  - `google:veo3` (default)
-- `GOOGLE_CLOUD_PROJECT`: GCP project for Veo3 API
-- `VERTEX_LOCATION`: Vertex region (e.g., `us-central1`)
-- `GOOGLE_CLOUD_REGION`: Same as above (for consistency)
-- `GOOGLE_APPLICATION_CREDENTIALS`: Path to ADC JSON file (in Railway, provide JSON via env and write it to a temp file at startup)
+#### Gemini API (Veo3) for create_video (Required for video generation)
+- Models available: `veo-3.0-generate-preview`, `veo-3.0-fast-generate-preview`
+- Uses Gemini API for streamlined video generation
 
-Note: Veo3 configuration is used by `create_video` for video generation. Other tools continue using OpenAI.
+Note: Gemini API configuration is used by `create_video` for video generation. Other tools continue using OpenAI.
 
-#### Vertex AI (Gemini) for analyze_video (Optional)
-- `ANALYZE_VIDEO_MODEL`: Default model for the `analyze_video` tool only. Examples:
-  - `gpt-4o` (default)
-  - `vertex:gemini-2.5-pro`
-  - Provide `GOOGLE_CLOUD_PROJECT`, `VERTEX_LOCATION`, and ADC as above.
+#### Server Configuration (Optional)
 - `PORT`: Server port (default: 8080)
 - `ALLOWED_ORIGINS`: CORS allowed origins (default: claude.ai domains)
 - `MAX_REQUESTS_PER_MINUTE`: Rate limiting (default: 100)
 - `JWT_SECRET`: Secret key for JWT signing (auto-generated if not provided)
 - `JWT_EXPIRY_HOURS`: Access token expiry in hours (default: 1)
 - `REFRESH_TOKEN_EXPIRY_DAYS`: Refresh token expiry in days (default: 30)
-
-### Google Drive Integration (Optional)
-- `GOOGLE_OAUTH_TOKEN`: OAuth token JSON for Google Drive access
-- `GOOGLE_SERVICE_ACCOUNT_JSON`: Service account credentials JSON for Google Drive access
 
 ## Local Development
 
@@ -97,8 +86,9 @@ Note: Veo3 configuration is used by `create_video` for video generation. Other t
 2. Install dependencies: `pip install -r requirements.txt`
 3. Set environment variables:
    ```bash
-   export GOOGLE_API_KEY="your-google-api-key"
+   export GEMINI_API_KEY="your-gemini-api-key"
    export OPENAI_API_KEY="your-openai-api-key"
+   export GOOGLE_OAUTH_TOKEN="your-oauth-token-json"
    ```
 4. Run the server: `python server.py`
 
@@ -113,8 +103,9 @@ python test_oauth.py
 ### Environment Variables
 ```json
 {
-  "GOOGLE_API_KEY": "your-google-api-key",
+  "GEMINI_API_KEY": "your-gemini-api-key",
   "OPENAI_API_KEY": "your-openai-api-key",
+  "GOOGLE_OAUTH_TOKEN": "your-oauth-token-json",
   "JWT_SECRET": "your-jwt-secret-key"
 }
 ```
