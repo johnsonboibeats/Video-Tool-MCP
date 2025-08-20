@@ -1518,9 +1518,22 @@ async def _monitor_and_upload_operation(
                 
                 logger.info(f"📥 Downloading video {i+1}/{len(generated_videos)}: {filename}")
                 
-                # Download video data
+                # Download video data using correct API method
                 client.files.download(file=generated_video.video)
-                video_data = generated_video.video.read()
+                
+                # Save video to temporary file, then read the bytes
+                temp_video_path = app_context.temp_dir / f"temp_{filename}"
+                generated_video.video.save(str(temp_video_path))
+                
+                # Read the video file as bytes
+                async with aiofiles.open(temp_video_path, 'rb') as f:
+                    video_data = await f.read()
+                
+                # Clean up temp file
+                try:
+                    temp_video_path.unlink()
+                except Exception:
+                    pass
                 
                 logger.info(f"📤 Uploading {filename} to Google Drive ({len(video_data)} bytes)")
                 
