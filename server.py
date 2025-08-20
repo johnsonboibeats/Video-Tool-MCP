@@ -1468,6 +1468,7 @@ async def _monitor_and_upload_operation(
         logger.info(f"🎬 Background monitoring started for operation: {operation_name}")
         
         # Store initial status
+        logger.info(f"📝 Storing operation {operation_name} in background monitoring")
         _operation_results[operation_name] = {
             "status": "in_progress",
             "prompt": prompt,
@@ -1558,13 +1559,18 @@ async def _monitor_and_upload_operation(
     except Exception as e:
         error_msg = f"Background processing failed for {operation_name}: {str(e)}"
         logger.error(error_msg)
+        logger.exception("Full traceback for background processing failure:")
         
-        # Update error status
-        _operation_results[operation_name] = {
-            "status": "failed", 
-            "error": error_msg,
-            "completed_at": time.time()
-        }
+        # Update error status - ensure we can still store it even if background task fails
+        try:
+            _operation_results[operation_name] = {
+                "status": "failed", 
+                "error": error_msg,
+                "completed_at": time.time()
+            }
+            logger.info(f"❌ Stored failure status for operation {operation_name}")
+        except Exception as store_error:
+            logger.error(f"Failed to store error status for {operation_name}: {store_error}")
 
 # =============================================================================
 # VIDEO PROCESSING TOOLS
@@ -1808,28 +1814,65 @@ async def get_video_operation_status(
         if ctx: await ctx.info(f"Checking status for operation: {operation_id}")
         
         # Check stored results from background processing
+        logger.info(f"🔍 Checking operation {operation_id} in local storage")
+        logger.info(f"🗃️ Currently stored operations: {list(_operation_results.keys())}")
+        
         if operation_id not in _operation_results:
+            logger.warning(f"⚠️ Operation {operation_id} not found in local storage")
+            
             # Try to get status directly from API as fallback
             if not GENAI_AVAILABLE:
                 return {
                     "status": "unknown",
-                    "error": "Operation not found in local storage and Google Gen AI SDK not available"
+                    "error": "Operation not found in local storage and Google Gen AI SDK not available",
+                    "debug_info": {
+                        "operation_id": operation_id,
+                        "stored_operations": list(_operation_results.keys()),
+                        "genai_available": GENAI_AVAILABLE
+                    }
                 }
             
             try:
                 app_context = get_app_context()
+                if not app_context.gemini_configured:
+                    return {
+                        "status": "unknown",
+                        "error": "Gemini API not configured",
+                        "debug_info": {
+                            "operation_id": operation_id,
+                            "gemini_configured": app_context.gemini_configured
+                        }
+                    }
+                
                 client = genai_sdk.Client(api_key=app_context.gemini_api_key)
-                operation = client.operations.get(operation_id)
+                
+                # Create operation object from ID string
+                logger.info(f"🔍 Attempting to fetch operation {operation_id} directly from API")
+                operation = genai_types.GenerateVideosOperation(name=operation_id)
+                operation = client.operations.get(operation)
+                
+                logger.info(f"✅ Found operation {operation_id} via API: done={operation.done}")
                 
                 return {
                     "status": "completed" if operation.done else "in_progress",
                     "operation_id": operation_id,
-                    "message": "Operation found via API, but auto-upload may not be active for this operation."
+                    "message": "Operation found via API, but auto-upload may not be active for this operation. The background monitoring may have failed.",
+                    "debug_info": {
+                        "found_via_api": True,
+                        "operation_done": operation.done,
+                        "background_monitoring_active": False
+                    }
                 }
             except Exception as e:
+                logger.error(f"❌ Failed to fetch operation {operation_id} from API: {e}")
                 return {
                     "status": "not_found",
-                    "error": f"Operation {operation_id} not found: {str(e)}"
+                    "error": f"Operation {operation_id} not found in local storage or API: {str(e)}",
+                    "debug_info": {
+                        "operation_id": operation_id,
+                        "api_error": str(e),
+                        "stored_operations": list(_operation_results.keys())
+                    }
                 }
         
         # Get stored results
