@@ -491,7 +491,7 @@ def initialize_app_context():
         if gemini_configured:
             logger.info("Gemini API configuration detected")
         else:
-            logger.warning("Gemini API key not set - video generation will fail (default is veo-3.0-generate-preview)")
+            logger.warning("Gemini API key not set - video generation will fail (default is veo-3.0-generate-001)")
 
         # Create context
         context = AppContext(
@@ -1585,6 +1585,152 @@ async def _monitor_and_upload_operation(
         except Exception as store_error:
             logger.error(f"Failed to store error status for {operation_name}: {store_error}")
 
+async def _monitor_multiple_operations(
+    operations: List[str],
+    prompt: str,
+    selected_model: str,
+    folder_id: str,
+    expected_count: int
+):
+    """Background task to monitor multiple operations and combine results"""
+    primary_operation = operations[0]
+    
+    try:
+        logger.info(f"🎬 Background monitoring started for {len(operations)} operations")
+        
+        # Store initial status under primary operation ID
+        _operation_results[primary_operation] = {
+            "status": "in_progress",
+            "prompt": prompt,
+            "model": selected_model,
+            "expected_videos": expected_count,
+            "videos": [],
+            "errors": [],
+            "started_at": time.time(),
+            "all_operations": operations,
+            "completed_operations": 0
+        }
+        
+        # Monitor each operation individually
+        completed_videos = []
+        all_errors = []
+        
+        # Initialize client for background task
+        app_context = get_app_context()
+        if not GENAI_AVAILABLE or not app_context.gemini_configured:
+            raise ValueError("Gemini API not configured for background processing")
+        
+        client = genai_sdk.Client(api_key=app_context.gemini_api_key)
+        
+        for i, operation_name in enumerate(operations):
+            try:
+                logger.info(f"🔄 Monitoring operation {i+1}/{len(operations)}: {operation_name}")
+                
+                # Poll this operation until completion
+                operation = genai_types.GenerateVideosOperation(name=operation_name)
+                
+                while not operation.done:
+                    await asyncio.sleep(20)  # Check every 20 seconds
+                    try:
+                        operation = client.operations.get(operation)
+                        logger.info(f"🔄 Operation {i+1} status: {'completed' if operation.done else 'in_progress'}")
+                    except Exception as e:
+                        logger.error(f"Failed to poll operation {operation_name}: {e}")
+                        await asyncio.sleep(60)  # Wait longer on error
+                        continue
+                
+                logger.info(f"✅ Operation {i+1} completed! Processing video...")
+                
+                # Extract and upload video from this operation
+                if hasattr(operation, 'response') and hasattr(operation.response, 'generated_videos'):
+                    generated_videos = operation.response.generated_videos
+                    
+                    for j, generated_video in enumerate(generated_videos):
+                        try:
+                            # Generate filename
+                            if len(operations) > 1:
+                                filename = f"generated_video_{uuid.uuid4().hex[:8]}_{i+1}_{j+1}.mp4"
+                            else:
+                                filename = f"generated_video_{uuid.uuid4().hex[:8]}.mp4"
+                            
+                            logger.info(f"📥 Downloading video from operation {i+1}: {filename}")
+                            
+                            # Download and save video
+                            client.files.download(file=generated_video.video)
+                            temp_video_path = app_context.temp_dir / f"temp_{filename}"
+                            generated_video.video.save(str(temp_video_path))
+                            
+                            # Read video bytes
+                            async with aiofiles.open(temp_video_path, 'rb') as f:
+                                video_data = await f.read()
+                            
+                            # Clean up temp file
+                            try:
+                                temp_video_path.unlink()
+                            except Exception:
+                                pass
+                            
+                            logger.info(f"📤 Uploading {filename} to Google Drive ({len(video_data)} bytes)")
+                            
+                            # Upload to Google Drive
+                            web_view_link = await _upload_to_drive(
+                                file_data=video_data,
+                                filename=filename,
+                                description=f"Generated video {i+1} with {selected_model}: {prompt[:100]}...",
+                                folder_id=folder_id,
+                                ctx=None
+                            )
+                            
+                            completed_videos.append({
+                                "filename": filename,
+                                "url": web_view_link,
+                                "size_bytes": len(video_data),
+                                "operation_index": i + 1
+                            })
+                            
+                            logger.info(f"✅ Video {i+1} uploaded successfully: {web_view_link}")
+                            
+                        except Exception as e:
+                            error_msg = f"Failed to process video from operation {i+1}: {str(e)}"
+                            logger.error(error_msg)
+                            all_errors.append(error_msg)
+                
+                # Update progress
+                _operation_results[primary_operation]["completed_operations"] = i + 1
+                
+            except Exception as e:
+                error_msg = f"Failed to monitor operation {i+1}: {str(e)}"
+                logger.error(error_msg)
+                all_errors.append(error_msg)
+        
+        # Update final status
+        _operation_results[primary_operation].update({
+            "status": "completed",
+            "videos": completed_videos,
+            "errors": all_errors,
+            "completed_at": time.time(),
+            "total_videos": len(completed_videos)
+        })
+        
+        logger.info(f"🎉 Multi-operation processing completed: {len(completed_videos)} videos uploaded")
+        
+    except Exception as e:
+        error_msg = f"Multi-operation background processing failed: {str(e)}"
+        logger.error(error_msg)
+        logger.exception("Full traceback for multi-operation failure:")
+        
+        # Update error status
+        try:
+            _operation_results[primary_operation] = {
+                "status": "failed", 
+                "error": error_msg,
+                "completed_at": time.time(),
+                "all_operations": operations
+            }
+            logger.info(f"❌ Stored failure status for multi-operation {primary_operation}")
+        except Exception as store_error:
+            logger.error(f"Failed to store error status for multi-operation: {store_error}")
+
 # =============================================================================
 # VIDEO PROCESSING TOOLS
 # =============================================================================
@@ -1608,10 +1754,10 @@ async def create_video(
     
     Args:
         prompt: Text description of the video to generate (max 32000 chars)
-        model: Video generation model (veo-2.0-generate-001, veo-3.0-generate-preview, veo-3.0-fast-generate-preview)
+        model: Video generation model (veo-2.0-generate-001, veo-3.0-generate-001, veo-3.0-fast-generate-001)
         aspect_ratio: Video aspect ratio (16:9 or 9:16)
         negative_prompt: Elements to exclude from generation
-        n: Number of videos to generate (1-4 for Veo2, 1-2 for Veo3)
+        n: Number of videos to generate (1-4 for stable models, 1-2 for preview models)
         folder_id: Google Drive folder ID (defaults to Downloads folder)
         resolution: Video resolution (720p or 1080p)
         generate_audio: Whether to generate native audio (music, sound effects, dialogue)
@@ -1626,8 +1772,8 @@ async def create_video(
 
     # Determine model selection (scoped to create_video only)
     env_model = os.getenv("CREATE_VIDEO_MODEL")
-    # Use environment variable if set, otherwise use default
-    selected_model = env_model or "gemini:veo-3.0-generate-preview"
+    # Use environment variable if set, otherwise use stable Veo3 model
+    selected_model = env_model or "gemini:veo-3.0-generate-001"
     
     # Parse provider and model from standardized format
     if ":" in selected_model:
@@ -1648,13 +1794,16 @@ async def create_video(
     if len(prompt) > 32000:
         raise ValueError("Prompt must be 32000 characters or less")
     
-    # Different video limits per model
+    # Validate video count limits based on model capabilities
     if model_name == "veo-2.0-generate-001":
         if n < 1 or n > 4:
-            raise ValueError("Number of videos must be between 1 and 4 (Veo2 API limit)")
-    else:  # Veo3 models
+            raise ValueError("Number of videos must be between 1 and 4 for Veo2")
+    elif model_name in ["veo-3.0-generate-001", "veo-3.0-fast-generate-001"]:
+        if n < 1 or n > 4:
+            raise ValueError("Number of videos must be between 1 and 4 for stable Veo3 models")
+    else:  # Preview models
         if n < 1 or n > 2:
-            raise ValueError("Number of videos must be between 1 and 2 (Veo3 API limit)")
+            raise ValueError("Number of videos must be between 1 and 2 for preview models")
     
     # Progress tracking for batch generation
     if n > 1 and ctx:
@@ -1683,22 +1832,42 @@ async def create_video(
         if provider != "gemini":
             raise ValueError(f"Unsupported provider '{provider}' for video generation. Only 'gemini' is supported.")
         
-        # Generate videos
-        operation = client.models.generate_videos(
-            model=model_name,
-            prompt=prompt,
-            config=config,
-        )
+        # Generate videos based on model capabilities
+        operations = []
         
-        # Return operation ID immediately and start background processing
+        if model_name in ["veo-2.0-generate-001", "veo-3.0-generate-001", "veo-3.0-fast-generate-001"]:
+            # Stable models support up to 4 videos per request with explicit n parameter
+            operation = client.models.generate_videos(
+                model=model_name,
+                prompt=prompt,
+                config=config,
+                n=n  # Use the n parameter for stable models
+            )
+            operations.append(operation)
+            if ctx: await ctx.info(f"Started generation of {n} video(s) in single request: {operation.name}")
+        else:
+            # Preview models: make separate API calls for each video (limited to 1 per request)
+            for i in range(n):
+                operation = client.models.generate_videos(
+                    model=model_name,
+                    prompt=prompt,
+                    config=config,
+                )
+                operations.append(operation)
+                if ctx: await ctx.info(f"Started video generation {i+1}/{n}: {operation.name}")
+        
+        # Return primary operation ID and start background processing for all operations
+        primary_operation = operations[0]
+        
         if ctx:
-            await ctx.info(f"Video generation started! Operation ID: {operation.name}")
+            await ctx.info(f"Video generation started! Primary Operation ID: {primary_operation.name}")
+            await ctx.info(f"Total operations: {len(operations)} (for {n} videos)")
             await ctx.info("Videos will be automatically uploaded to Google Drive when ready.")
         
-        # Start background task to monitor and upload when complete
+        # Start background task to monitor all operations and upload when complete
         import time
-        asyncio.create_task(_monitor_and_upload_operation(
-            operation_name=operation.name,
+        asyncio.create_task(_monitor_multiple_operations(
+            operations=[op.name for op in operations],
             prompt=prompt,
             selected_model=model_name,
             folder_id=folder_id or "1y8eWyr68gPTiFTS2GuNODZp9zx4kg4FC",
@@ -1707,12 +1876,13 @@ async def create_video(
         
         # Return operation info immediately
         return {
-            "operation_id": operation.name,
+            "operation_id": primary_operation.name,
+            "all_operations": [op.name for op in operations],
             "status": "started",
-            "message": f"Video generation started with {provider} {model_name}. Videos will be automatically uploaded to Google Drive when ready.",
-            "estimated_time": "1-6 minutes",
+            "message": f"Video generation started with {provider} {model_name}. {len(operations)} operation(s) created for {n} video(s). Videos will be automatically uploaded to Google Drive when ready.",
+            "estimated_time": "1-6 minutes per video",
             "expected_videos": n,
-            "check_status_with": f"get_video_operation_status('{operation.name}')"
+            "check_status_with": f"get_video_operation_status('{primary_operation.name}')"
         }
             
     except Exception as e:
@@ -1726,7 +1896,7 @@ async def create_video_from_image(
     image: str,
     prompt: str,
     ctx: Context = None,
-    model: str = "gemini:veo-3.0-generate-preview",
+    model: str = "gemini:veo-3.0-generate-001",
     aspect_ratio: Literal["16:9", "9:16"] = "16:9",
     negative_prompt: Optional[str] = None,
     folder_id: Optional[str] = None,
@@ -2019,7 +2189,7 @@ async def batch_video_generation(
     base_prompt: str,
     variations: List[str],
     ctx: Context = None,
-    model: Literal["veo-2.0-generate-001", "veo-3.0-generate-preview", "veo-3.0-fast-generate-preview"] = "veo-3.0-fast-generate-preview",
+    model: Literal["veo-2.0-generate-001", "veo-3.0-generate-001", "veo-3.0-fast-generate-001"] = "veo-3.0-generate-001",
     folder_id: Optional[str] = None,
     aspect_ratio: Literal["16:9", "9:16"] = "16:9",
     resolution: Literal["720p", "1080p"] = "720p"
